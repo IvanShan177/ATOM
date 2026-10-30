@@ -70,17 +70,27 @@ def attend_fp8_head_shards(
     sink,
     softmax_scale,
     shard_heads,
+    *,
+    mode=None,
 ):
-    """Native V4.1 MXFP8 attention for each original TP head shard.
+    """V4.1 MXFP8 owner attention, with an opt-in copy-free path.
 
-    Copies preserve the native dense Q/scale/output ABI. Their cost belongs to
-    the owner path; this migration does not claim a fused FP8 grouped kernel.
+    ``native`` keeps four dense H16 calls. ``a0`` keeps their split policy but
+    passes strided Q/scales and writes into one output. ``h64`` uses one native
+    H64 call only at the two rows tested with complete real-weight windows;
+    other rows use A0. Small M can choose different H16/H64 split counts, so
+    changing head count there is not an exact arithmetic substitution.
     """
     import torch
 
     from atom.model_ops.attentions.deepseek_v41.fp8_attention import (
         sparse_attn_v41_paged_2src,
     )
+    from atom.utils import envs
+
+    mode = envs.ATOM_DSV41_OWNER_FP8_ATTENTION if mode is None else mode
+    if mode not in ("native", "a0", "h64"):
+        raise ValueError(f"Unknown owner FP8 attention mode: {mode}")
 
     values, scales = query
     if (
@@ -90,6 +100,21 @@ def attend_fp8_head_shards(
     ):
         raise ValueError("FP8 owner attention requires four original head shards")
     args = (pool, prefix_ids, prefix_indptr, window, window_ids, window_indptr)
+    if mode != "native":
+        if values.shape[1:] != (64, 512) or shard_heads != 16:
+            raise ValueError("Optimized FP8 owner attention requires four H16 shards")
+        if mode == "h64" and values.shape[0] in (221, 384):
+            return sparse_attn_v41_paged_2src(query, *args, sink, softmax_scale)
+        output = torch.empty(values.shape, device=values.device, dtype=torch.bfloat16)
+        for start in range(0, 64, 16):
+            sparse_attn_v41_paged_2src(
+                (values[:, start : start + 16], scales[:, start : start + 16]),
+                *args,
+                sink[start : start + 16],
+                softmax_scale,
+                out=output[:, start : start + 16],
+            )
+        return output
     return torch.cat(
         [
             sparse_attn_v41_paged_2src(

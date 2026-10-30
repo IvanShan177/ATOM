@@ -508,6 +508,7 @@ class OwnerServing:
         from atom.models.deepseek_v41.model import Block
 
         from .owner_cost_attention_chain import forward_owner
+        from .owner_ffn_dispatch import finish_output, routed_forward
         from .owner_serving_kernels import sum_original_tp
 
         step, model = metadata.step, self.model
@@ -563,12 +564,21 @@ class OwnerServing:
                 moe.alt_stream.wait_stream(main)
                 with torch.cuda.stream(moe.alt_stream):
                     shared = moe.shared_experts(packed)
-                routed = moe.experts(packed, moe.router_logits(packed))
+                routed, complete = routed_forward(
+                    moe,
+                    packed,
+                    shared,
+                    wait_shared=lambda main=main, alt=moe.alt_stream: main.wait_stream(
+                        alt
+                    ),
+                )
                 main.wait_stream(moe.alt_stream)
             else:
                 shared = moe.shared_experts(packed)
-                routed = moe.experts(packed, moe.router_logits(packed))
-            output = v41_mhc_reduce_scatter(routed + shared).view(1, capacity, 5120)
+                routed, complete = routed_forward(moe, packed, shared)
+            output = finish_output(
+                routed, shared, complete, self.rank, capacity, v41_mhc_reduce_scatter
+            )
             state = Block.finish_ffn(layer, output, residual, pre, post, comb)
         if isinstance(global_engram, EngramStagedRows):
             global_engram.join()

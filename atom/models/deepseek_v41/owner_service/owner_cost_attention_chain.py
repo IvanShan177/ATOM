@@ -77,7 +77,6 @@ def forward_owner(
     from atom.model_ops.blockscale import native_quant_linear, quantize_fp8
     from atom.utils.region_graph import join_stream
 
-    from .owner_grouped_attention import attend_grouped_head_shards
     from .owner_head_attention import attend_fp8_head_shards
 
     # Current main's Mega-MHC returns BF16 for cache/index readers together
@@ -168,6 +167,9 @@ def forward_owner(
         )
     # Keep native per-TP head geometry. No rank-0 selection is broadcast and no
     # arithmetic is substituted by a newly compiled attention implementation.
+    if not cache.kv_fp8:
+        from .owner_grouped_attention import attend_grouped_head_shards
+
     attend = attend_fp8_head_shards if cache.kv_fp8 else attend_grouped_head_shards
     output = attend(
         query_fp8 if cache.kv_fp8 else query,

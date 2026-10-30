@@ -1,0 +1,993 @@
+{
+  "scope": "Current fp8-owner native attention vs A0 and H64 at local M221/384; full C256 ABAB",
+  "source_base": "d957f46dd87acceb3d90fb011b72c54df2c0bf5e",
+  "aiter_head": "c141da6bd10300dfc22da7777c23efc6c7b88712",
+  "runtime_sha256": {
+    "atom/model_ops/moe.py": "fc020355c6b0397766e8fb99bfdc71d1362bb58bafcde98c65ea594870d5d0a7",
+    "atom/models/deepseek_v41/owner_service/owner_cost_attention_chain.py": "03b1bca8f312e927930a4b813e9c3989f121fe827a21f39516ffb54cf9c4283f",
+    "atom/models/deepseek_v41/owner_service/owner_head_attention.py": "3b88ef7fb99ad2be70929afc69b8900267b79c943a126dbea97c9bbb004c9323",
+    "atom/models/deepseek_v41/owner_service/owner_serving.py": "b82328386282665210eb22329a4162fb794cefb23df2ec5fea7f5c4c76c680d0",
+    "atom/utils/envs.py": "6b0e906d550e2d0f7a8082d503a8fdc683af870a132bd7d96238fde22df77f13",
+    "atom/models/deepseek_v41/owner_service/owner_ffn_dispatch.py": "d65ee00b3145351188f6050a8f54a3372298837258f5a1d2ca78205ccc954e7f"
+  },
+  "profile": {
+    "name": "dsv41-dashboard-random-fp8-tp4-full",
+    "reference": {
+      "repository": "https://github.com/ROCm/ATOM",
+      "commit": "646da00fe322d28cb7971082d2a8af6905c57cd8",
+      "aiter_commit": "c90842add033fb3f9dbe0c6c53187a023faff1ee",
+      "run_url": "https://github.com/ROCm/ATOM/actions/runs/40724946700",
+      "summary_artifact_id": 12853757650,
+      "summary_artifact_sha256": "58028d07bbf4881a8a319e0e689667b0ae47fc047d9210b14370ff0645a382cf",
+      "catalog": ".github/benchmark/models.json",
+      "driver": ".github/scripts/atom_test.sh",
+      "scope": "Public random-serving configuration on the selected local source; not a reproduction of the public commit or its measured throughput."
+    },
+    "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+    "engine": {
+      "tensor_parallel_size": 4,
+      "data_parallel_size": 1,
+      "pipeline_parallel_size": 1,
+      "prefill_context_parallel_size": 1,
+      "decode_context_parallel_size": 1,
+      "kv_cache_dtype": "fp8",
+      "index_cache_dtype": "fp4",
+      "method": "dspark",
+      "num_speculative_tokens": 5,
+      "enable_expert_parallel": false,
+      "enable_dp_attention": false,
+      "max_num_seqs": 512,
+      "max_num_batched_tokens": 16384,
+      "attn_prefill_chunk_size": 16384,
+      "gpu_memory_utilization": 0.9,
+      "enable_prefix_caching": true,
+      "level": 3,
+      "cudagraph_mode": "FULL"
+    },
+    "benchmark": {
+      "backend": "vllm",
+      "dataset_name": "random",
+      "random_input_len": 8192,
+      "random_output_len": 1024,
+      "random_range_ratio": 0.8,
+      "max_concurrency": 256,
+      "num_prompts": 2560,
+      "num_warmups": 512,
+      "request_rate": "inf",
+      "ignore_eos": true,
+      "use_chat_template": true,
+      "trust_remote_code": true,
+      "seed": 0,
+      "percentile_metrics": "ttft,tpot,itl,e2el"
+    },
+    "environment": {
+      "AITER_LOG_LEVEL": "WARNING",
+      "PYTHONNOUSERSITE": "1",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONUNBUFFERED": "1"
+    },
+    "owner_execution": {
+      "capacity": "full",
+      "scope": "Opt-in FP8 TP4/EP1 owner plus retained prefill; no EP4, packed policy or stable performance/accuracy acceptance.",
+      "environment": {
+        "DSV41_FP8_OWNER_ENTRY": "1",
+        "DSV41_OWNER_SERVING": "1",
+        "DSV41_OWNER_STABLE_GRAPHS": "1",
+        "DSV41_OWNER_PACKET_PUBLICATION": "1",
+        "DSV41_OWNER_SELECTIVE_RECONCILIATION": "1",
+        "DSV41_OWNER_ACCEPTED_PREFILL": "1",
+        "ATOM_DSV41_ROW_SHARDED_MHC": "1",
+        "ATOM_DSV41_PREFILL_TAIL_MODE": "settled",
+        "ATOM_DSV41_PREFILL_TAIL_TRANSPORT": "packet",
+        "ATOM_DSV41_SIDE_STREAMS": "0",
+        "ATOM_DSV41_PREFILL_QUANTIZED_FFN": "1",
+        "ATOM_DSV41_PREFILL_LOCAL_ROUTER": "1",
+        "ATOM_DSV41_PREFILL_ROUTE_PACKET": "0",
+        "ATOM_DSV41_EP_PROFILED_PLACEMENT": "0",
+        "ATOM_DSV41_MHC_BACKEND": "hip",
+        "ATOM_LOADER_NUM_THREADS": "1",
+        "ATOM_SHUTDOWN_TIMEOUT_S": "30",
+        "ATOM_USE_TRITON_MOE": "0",
+        "ATOM_DSV41_OWNER_FP8_ATTENTION": "native"
+      }
+    },
+    "acceptance": {
+      "synthetic_acceptance": false,
+      "fixed_query_rows": null,
+      "owner_ep4_enabled": false,
+      "performance_baseline": "same deployment, DSpark5 on both arms",
+      "mtp_stats_scope": "Native benchmark stats are cumulative and include warmup; not formal-only acceptance length.",
+      "executed_rows": "Must be measured from the actual target/draft and graph routes before kernel attribution; C256 does not imply M768.",
+      "measurement_scope": "original_full_request_profile"
+    }
+  },
+  "order": [
+    "a1",
+    "b1",
+    "a2",
+    "b2"
+  ],
+  "pooled": {
+    "native": {
+      "duration": 751.179724348709,
+      "total_output_tokens": 4708924,
+      "output_throughput": 6268.70487496551,
+      "total_token_throughput": 56658.83492382784,
+      "mean_tpot_ms": 38.446741774379205
+    },
+    "h64": {
+      "duration": 708.8897025519982,
+      "total_output_tokens": 4708924,
+      "output_throughput": 6642.675134154023,
+      "total_token_throughput": 60038.91415939715,
+      "mean_tpot_ms": 36.371393563578415
+    },
+    "throughput_gain_percent": 5.965670208562357,
+    "tpot_change_percent": -5.3979820266168765
+  },
+  "pairs": {
+    "a1_b1": {
+      "duration": {
+        "a": 375.28782655484974,
+        "b": 345.49568524584174,
+        "change_percent": -7.938477936388322
+      },
+      "output_throughput": {
+        "a": 6273.749995074478,
+        "b": 6814.736335490423,
+        "change_percent": 8.623014000249828
+      },
+      "total_token_throughput": {
+        "a": 56704.43455455323,
+        "b": 61594.06588495485,
+        "change_percent": 8.623014000249828
+      },
+      "mean_ttft_ms": {
+        "a": 1089.826950301358,
+        "b": 1098.4488419919217,
+        "change_percent": 0.7911248375881641
+      },
+      "mean_tpot_ms": {
+        "a": 38.383892064545414,
+        "b": 35.39584287265187,
+        "change_percent": -7.784643586608975
+      },
+      "mean_e2el_ms": {
+        "a": 36335.437039379394,
+        "b": 33579.335027080015,
+        "change_percent": -7.585162686532132
+      },
+      "p99_ttft_ms": {
+        "a": 14323.899957071988,
+        "b": 14543.481749817729,
+        "change_percent": 1.5329749118872416
+      },
+      "p99_tpot_ms": {
+        "a": 70.29505940804488,
+        "b": 65.28498751925804,
+        "change_percent": -7.127203435030404
+      },
+      "p99_e2el_ms": {
+        "a": 68913.79574432968,
+        "b": 63839.06651715744,
+        "change_percent": -7.363880007421875
+      },
+      "accept_length": {
+        "a": 2.379731511808995,
+        "b": 2.3775203062747226,
+        "change_percent": -0.09291827768382888
+      }
+    },
+    "a2_b2": {
+      "duration": {
+        "a": 375.89189779385924,
+        "b": 363.39401730615646,
+        "change_percent": -3.324860301872401
+      },
+      "output_throughput": {
+        "a": 6263.667862538493,
+        "b": 6479.088504135678,
+        "change_percent": 3.4392092033737054
+      },
+      "total_token_throughput": {
+        "a": 56613.308573281116,
+        "b": 58560.358692067755,
+        "change_percent": 3.4392092033737054
+      },
+      "mean_ttft_ms": {
+        "a": 1094.6169009290315,
+        "b": 1104.6843535648804,
+        "change_percent": 0.9197238437762545
+      },
+      "mean_tpot_ms": {
+        "a": 38.509591484213,
+        "b": 37.346944254504955,
+        "change_percent": -3.019110784866852
+      },
+      "mean_e2el_ms": {
+        "a": 36424.07296463607,
+        "b": 35362.98142202941,
+        "change_percent": -2.9131600511476896
+      },
+      "p99_ttft_ms": {
+        "a": 14429.961544172824,
+        "b": 14408.55556277557,
+        "change_percent": -0.14834399476205684
+      },
+      "p99_tpot_ms": {
+        "a": 70.00877651601948,
+        "b": 71.1150346702332,
+        "change_percent": 1.580170671830805
+      },
+      "p99_e2el_ms": {
+        "a": 68913.6493084766,
+        "b": 68142.70007662472,
+        "change_percent": -1.1187177570598394
+      },
+      "accept_length": {
+        "a": 2.3296688663332645,
+        "b": 2.40566189441658,
+        "change_percent": 3.261966933649396
+      }
+    }
+  },
+  "repeat_drift_percent": {
+    "native": -0.1607034476015179,
+    "h64": -4.9253238105005925
+  },
+  "arms": {
+    "a1": {
+      "benchmark": {
+        "date": "20261030-092149",
+        "backend": "vllm",
+        "model_id": "/shared/data/amd_int/models/DeepSeek-V4.1-Flash",
+        "tokenizer_id": "/shared/data/amd_int/models/DeepSeek-V4.1-Flash",
+        "best_of": 1,
+        "num_prompts": 2560,
+        "request_rate": "inf",
+        "burstiness": 1.0,
+        "max_concurrency": 256,
+        "duration": 375.28782655484974,
+        "completed": 2560,
+        "total_input_tokens": 18926022,
+        "total_output_tokens": 2354462,
+        "request_throughput": 6.821430962738265,
+        "request_goodput:": null,
+        "output_throughput": 6273.749995074478,
+        "total_token_throughput": 56704.43455455323,
+        "concurrency": 247.85967526504942,
+        "accept_length": 2.379731511808995,
+        "acceptance_rate": 0.2759463023617989,
+        "mean_ttft_ms": 1089.826950301358,
+        "median_ttft_ms": 292.6127091050148,
+        "std_ttft_ms": 2760.6443279359864,
+        "p99_ttft_ms": 14323.899957071988,
+        "mean_tpot_ms": 38.383892064545414,
+        "median_tpot_ms": 34.01967897777374,
+        "std_tpot_ms": 13.352029450719524,
+        "p99_tpot_ms": 70.29505940804488,
+        "mean_itl_ms": 94.73860891813126,
+        "median_itl_ms": 54.89819124341011,
+        "std_itl_ms": 164.82820821399085,
+        "p99_itl_ms": 441.2763595581057,
+        "mean_e2el_ms": 36335.437039379394,
+        "median_e2el_ms": 32113.597311545163,
+        "std_e2el_ms": 12650.514459754106,
+        "p99_e2el_ms": 68913.79574432968
+      },
+      "formal_interval": {
+        "first_request_start_utc": "2026-10-30T09:15:33.735675+00:00",
+        "last_request_end_utc": "2026-10-30T09:21:49.000437+00:00",
+        "request_span_seconds": 375.264762288
+      },
+      "request_counts": {
+        "warmup/success": 512,
+        "profiling/success": 2560
+      },
+      "effective_config_sha256": {
+        "a8w8_blockscale_mxscale_bpreshuffle_tuned_gemm.csv": "fa15dd632d52701dbc60d138c9b1904f47bf2304e681724ba5a313559096ae6a",
+        "batched_gemm_a8w8_blockscale_mxscale_bpreshuffle_tuned.csv": "a58d83ce568284a4df6adb5418ac63e0a41f56cbc9c4f17d713a2cd547ee8b42",
+        "bf16_tuned_gemm.csv": "f8d52956c46080ac8b9354052f197097ad5d1379cf1db83e1e9e2ed805031bd0",
+        "tuned_fmoe.csv": "4a7b50e999a4d1a5b0eaef5bbf7fcbf79f61ad1b90cfad9b28ccc67ce5b06ce5"
+      },
+      "exit_codes": {
+        "start": 0,
+        "ready": 0,
+        "smoke_client": 0,
+        "smoke_drain": 0,
+        "screen_client": 0,
+        "screen_drain": 0,
+        "formal_client": 0,
+        "formal_drain": 0,
+        "stop": 0
+      },
+      "logged_compile_or_capture_markers_during_formal": [],
+      "ranks": [
+        {
+          "rank": 0,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5438,
+            "FFN_M64_steps": 5,
+            "FFN_M1536_steps": 4719,
+            "FFN_M768_steps": 119,
+            "FFN_M512_steps": 93,
+            "FFN_M384_steps": 268,
+            "FFN_M256_steps": 167,
+            "FFN_M128_steps": 67
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H16_split1": 320,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 1,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5438,
+            "FFN_M64_steps": 5,
+            "FFN_M1536_steps": 4719,
+            "FFN_M768_steps": 119,
+            "FFN_M512_steps": 93,
+            "FFN_M384_steps": 268,
+            "FFN_M256_steps": 167,
+            "FFN_M128_steps": 67
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H16_split1": 320,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 2,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5438,
+            "FFN_M64_steps": 5,
+            "FFN_M1536_steps": 4719,
+            "FFN_M768_steps": 119,
+            "FFN_M512_steps": 93,
+            "FFN_M384_steps": 268,
+            "FFN_M256_steps": 167,
+            "FFN_M128_steps": 67
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H16_split1": 320,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 3,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5438,
+            "FFN_M64_steps": 5,
+            "FFN_M1536_steps": 4719,
+            "FFN_M768_steps": 119,
+            "FFN_M512_steps": 93,
+            "FFN_M384_steps": 268,
+            "FFN_M256_steps": 167,
+            "FFN_M128_steps": 67
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H16_split1": 320,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        }
+      ]
+    },
+    "b1": {
+      "benchmark": {
+        "date": "20261030-093501",
+        "backend": "vllm",
+        "model_id": "/shared/data/amd_int/models/DeepSeek-V4.1-Flash",
+        "tokenizer_id": "/shared/data/amd_int/models/DeepSeek-V4.1-Flash",
+        "best_of": 1,
+        "num_prompts": 2560,
+        "request_rate": "inf",
+        "burstiness": 1.0,
+        "max_concurrency": 256,
+        "duration": 345.49568524584174,
+        "completed": 2560,
+        "total_input_tokens": 18926022,
+        "total_output_tokens": 2354462,
+        "request_throughput": 7.409643909672563,
+        "request_goodput:": null,
+        "output_throughput": 6814.736335490423,
+        "total_token_throughput": 61594.06588495485,
+        "concurrency": 248.810915274258,
+        "accept_length": 2.3775203062747226,
+        "acceptance_rate": 0.2755040612549445,
+        "mean_ttft_ms": 1098.4488419919217,
+        "median_ttft_ms": 282.38261863589287,
+        "std_ttft_ms": 2822.6301389573,
+        "p99_ttft_ms": 14543.481749817729,
+        "mean_tpot_ms": 35.39584287265187,
+        "median_tpot_ms": 31.156458117912127,
+        "std_tpot_ms": 12.603004498047966,
+        "p99_tpot_ms": 65.28498751925804,
+        "mean_itl_ms": 87.60518406651698,
+        "median_itl_ms": 46.83987330645323,
+        "std_itl_ms": 166.7987538846543,
+        "p99_itl_ms": 405.08212238550186,
+        "mean_e2el_ms": 33579.335027080015,
+        "median_e2el_ms": 29623.056700453162,
+        "std_e2el_ms": 11980.974488739355,
+        "p99_e2el_ms": 63839.06651715744
+      },
+      "formal_interval": {
+        "first_request_start_utc": "2026-10-30T09:29:15.451074+00:00",
+        "last_request_end_utc": "2026-10-30T09:35:00.923297+00:00",
+        "request_span_seconds": 345.472222632
+      },
+      "request_counts": {
+        "warmup/success": 512,
+        "profiling/success": 2560
+      },
+      "effective_config_sha256": {
+        "a8w8_blockscale_mxscale_bpreshuffle_tuned_gemm.csv": "fa15dd632d52701dbc60d138c9b1904f47bf2304e681724ba5a313559096ae6a",
+        "batched_gemm_a8w8_blockscale_mxscale_bpreshuffle_tuned.csv": "a58d83ce568284a4df6adb5418ac63e0a41f56cbc9c4f17d713a2cd547ee8b42",
+        "bf16_tuned_gemm.csv": "f8d52956c46080ac8b9354052f197097ad5d1379cf1db83e1e9e2ed805031bd0",
+        "tuned_fmoe.csv": "4a7b50e999a4d1a5b0eaef5bbf7fcbf79f61ad1b90cfad9b28ccc67ce5b06ce5"
+      },
+      "exit_codes": {
+        "start": 0,
+        "ready": 0,
+        "smoke_drain": 0,
+        "smoke_client": 0,
+        "screen_client": 0,
+        "screen_drain": 0,
+        "formal_client": 0,
+        "formal_drain": 0,
+        "stop": 0
+      },
+      "logged_compile_or_capture_markers_during_formal": [],
+      "ranks": [
+        {
+          "rank": 0,
+          "new_owner_captures_after_screen": 2,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5315,
+            "FFN_M64_steps": 0,
+            "FFN_M1536_steps": 4720,
+            "FFN_M768_steps": 145,
+            "FFN_M512_steps": 187,
+            "FFN_M384_steps": 211,
+            "FFN_M256_steps": 37,
+            "FFN_M128_steps": 15
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H64_split1": 80,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 1,
+          "new_owner_captures_after_screen": 2,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5315,
+            "FFN_M64_steps": 0,
+            "FFN_M1536_steps": 4720,
+            "FFN_M768_steps": 145,
+            "FFN_M512_steps": 187,
+            "FFN_M384_steps": 211,
+            "FFN_M256_steps": 37,
+            "FFN_M128_steps": 15
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H64_split1": 80,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 2,
+          "new_owner_captures_after_screen": 2,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5315,
+            "FFN_M64_steps": 0,
+            "FFN_M1536_steps": 4720,
+            "FFN_M768_steps": 145,
+            "FFN_M512_steps": 187,
+            "FFN_M384_steps": 211,
+            "FFN_M256_steps": 37,
+            "FFN_M128_steps": 15
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H64_split1": 80,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 3,
+          "new_owner_captures_after_screen": 2,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5315,
+            "FFN_M64_steps": 0,
+            "FFN_M1536_steps": 4720,
+            "FFN_M768_steps": 145,
+            "FFN_M512_steps": 187,
+            "FFN_M384_steps": 211,
+            "FFN_M256_steps": 37,
+            "FFN_M128_steps": 15
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H64_split1": 80,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        }
+      ]
+    },
+    "a2": {
+      "benchmark": {
+        "date": "20261030-094844",
+        "backend": "vllm",
+        "model_id": "/shared/data/amd_int/models/DeepSeek-V4.1-Flash",
+        "tokenizer_id": "/shared/data/amd_int/models/DeepSeek-V4.1-Flash",
+        "best_of": 1,
+        "num_prompts": 2560,
+        "request_rate": "inf",
+        "burstiness": 1.0,
+        "max_concurrency": 256,
+        "duration": 375.89189779385924,
+        "completed": 2560,
+        "total_input_tokens": 18926022,
+        "total_output_tokens": 2354462,
+        "request_throughput": 6.810468688005388,
+        "request_goodput:": null,
+        "output_throughput": 6263.667862538493,
+        "total_token_throughput": 56613.308573281116,
+        "concurrency": 248.06500841527756,
+        "accept_length": 2.3296688663332645,
+        "acceptance_rate": 0.26593377326665285,
+        "mean_ttft_ms": 1094.6169009290315,
+        "median_ttft_ms": 290.29341880232096,
+        "std_ttft_ms": 2780.362506803594,
+        "p99_ttft_ms": 14429.961544172824,
+        "mean_tpot_ms": 38.509591484213,
+        "median_tpot_ms": 33.93711630996213,
+        "std_tpot_ms": 13.588391613868888,
+        "p99_tpot_ms": 70.00877651601948,
+        "mean_itl_ms": 94.80779479594216,
+        "median_itl_ms": 55.09171960875392,
+        "std_itl_ms": 166.11550374269373,
+        "p99_itl_ms": 441.5014427155256,
+        "mean_e2el_ms": 36424.07296463607,
+        "median_e2el_ms": 32018.096089363098,
+        "std_e2el_ms": 12808.456303602181,
+        "p99_e2el_ms": 68913.6493084766
+      },
+      "formal_interval": {
+        "first_request_start_utc": "2026-10-30T09:42:27.852721+00:00",
+        "last_request_end_utc": "2026-10-30T09:48:43.705451+00:00",
+        "request_span_seconds": 375.852730169
+      },
+      "request_counts": {
+        "warmup/success": 512,
+        "profiling/success": 2560
+      },
+      "effective_config_sha256": {
+        "a8w8_blockscale_mxscale_bpreshuffle_tuned_gemm.csv": "fa15dd632d52701dbc60d138c9b1904f47bf2304e681724ba5a313559096ae6a",
+        "batched_gemm_a8w8_blockscale_mxscale_bpreshuffle_tuned.csv": "a58d83ce568284a4df6adb5418ac63e0a41f56cbc9c4f17d713a2cd547ee8b42",
+        "bf16_tuned_gemm.csv": "f8d52956c46080ac8b9354052f197097ad5d1379cf1db83e1e9e2ed805031bd0",
+        "tuned_fmoe.csv": "4a7b50e999a4d1a5b0eaef5bbf7fcbf79f61ad1b90cfad9b28ccc67ce5b06ce5"
+      },
+      "exit_codes": {
+        "start": 0,
+        "ready": 0,
+        "smoke_drain": 0,
+        "smoke_client": 0,
+        "screen_client": 0,
+        "screen_drain": 0,
+        "formal_client": 0,
+        "formal_drain": 0,
+        "stop": 0
+      },
+      "logged_compile_or_capture_markers_during_formal": [],
+      "ranks": [
+        {
+          "rank": 0,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5456,
+            "FFN_M64_steps": 36,
+            "FFN_M1536_steps": 4968,
+            "FFN_M768_steps": 131,
+            "FFN_M512_steps": 61,
+            "FFN_M384_steps": 76,
+            "FFN_M256_steps": 110,
+            "FFN_M128_steps": 74
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H16_split1": 320,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 1,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5456,
+            "FFN_M64_steps": 36,
+            "FFN_M1536_steps": 4968,
+            "FFN_M768_steps": 131,
+            "FFN_M512_steps": 61,
+            "FFN_M384_steps": 76,
+            "FFN_M256_steps": 110,
+            "FFN_M128_steps": 74
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H16_split1": 320,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 2,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5456,
+            "FFN_M64_steps": 36,
+            "FFN_M1536_steps": 4968,
+            "FFN_M768_steps": 131,
+            "FFN_M512_steps": 61,
+            "FFN_M384_steps": 76,
+            "FFN_M256_steps": 110,
+            "FFN_M128_steps": 74
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H16_split1": 320,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 3,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5456,
+            "FFN_M64_steps": 36,
+            "FFN_M1536_steps": 4968,
+            "FFN_M768_steps": 131,
+            "FFN_M512_steps": 61,
+            "FFN_M384_steps": 76,
+            "FFN_M256_steps": 110,
+            "FFN_M128_steps": 74
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H16_split1": 320,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        }
+      ]
+    },
+    "b2": {
+      "benchmark": {
+        "date": "20261030-100222",
+        "backend": "vllm",
+        "model_id": "/shared/data/amd_int/models/DeepSeek-V4.1-Flash",
+        "tokenizer_id": "/shared/data/amd_int/models/DeepSeek-V4.1-Flash",
+        "best_of": 1,
+        "num_prompts": 2560,
+        "request_rate": "inf",
+        "burstiness": 1.0,
+        "max_concurrency": 256,
+        "duration": 363.39401730615646,
+        "completed": 2560,
+        "total_input_tokens": 18926022,
+        "total_output_tokens": 2354462,
+        "request_throughput": 7.044694953916154,
+        "request_goodput:": null,
+        "output_throughput": 6479.088504135678,
+        "total_token_throughput": 58560.358692067755,
+        "concurrency": 249.12141677920127,
+        "accept_length": 2.40566189441658,
+        "acceptance_rate": 0.281132378883316,
+        "mean_ttft_ms": 1104.6843535648804,
+        "median_ttft_ms": 280.5890617892146,
+        "std_ttft_ms": 2796.895594322258,
+        "p99_ttft_ms": 14408.55556277557,
+        "mean_tpot_ms": 37.346944254504955,
+        "median_tpot_ms": 33.13155933333323,
+        "std_tpot_ms": 13.585000320490995,
+        "p99_tpot_ms": 71.1150346702332,
+        "mean_itl_ms": 92.3932521700157,
+        "median_itl_ms": 47.199941240251064,
+        "std_itl_ms": 236.1201214849827,
+        "p99_itl_ms": 424.57261033356167,
+        "mean_e2el_ms": 35362.98142202941,
+        "median_e2el_ms": 31438.43271303922,
+        "std_e2el_ms": 12687.291188579606,
+        "p99_e2el_ms": 68142.70007662472
+      },
+      "formal_interval": {
+        "first_request_start_utc": "2026-10-30T09:56:18.921571+00:00",
+        "last_request_end_utc": "2026-10-30T10:02:22.277889+00:00",
+        "request_span_seconds": 363.356317964
+      },
+      "request_counts": {
+        "warmup/success": 512,
+        "profiling/success": 2560
+      },
+      "effective_config_sha256": {
+        "a8w8_blockscale_mxscale_bpreshuffle_tuned_gemm.csv": "fa15dd632d52701dbc60d138c9b1904f47bf2304e681724ba5a313559096ae6a",
+        "batched_gemm_a8w8_blockscale_mxscale_bpreshuffle_tuned.csv": "a58d83ce568284a4df6adb5418ac63e0a41f56cbc9c4f17d713a2cd547ee8b42",
+        "bf16_tuned_gemm.csv": "f8d52956c46080ac8b9354052f197097ad5d1379cf1db83e1e9e2ed805031bd0",
+        "tuned_fmoe.csv": "4a7b50e999a4d1a5b0eaef5bbf7fcbf79f61ad1b90cfad9b28ccc67ce5b06ce5"
+      },
+      "exit_codes": {
+        "start": 0,
+        "ready": 0,
+        "smoke_drain": 0,
+        "smoke_client": 0,
+        "screen_client": 0,
+        "screen_drain": 0,
+        "formal_drain": 0,
+        "formal_client": 0,
+        "stop": 0
+      },
+      "logged_compile_or_capture_markers_during_formal": [],
+      "ranks": [
+        {
+          "rank": 0,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5337,
+            "FFN_M64_steps": 7,
+            "FFN_M1536_steps": 4664,
+            "FFN_M768_steps": 159,
+            "FFN_M512_steps": 167,
+            "FFN_M384_steps": 176,
+            "FFN_M256_steps": 119,
+            "FFN_M128_steps": 45
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H64_split1": 80,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 1,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5337,
+            "FFN_M64_steps": 7,
+            "FFN_M1536_steps": 4664,
+            "FFN_M768_steps": 159,
+            "FFN_M512_steps": 167,
+            "FFN_M384_steps": 176,
+            "FFN_M256_steps": 119,
+            "FFN_M128_steps": 45
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H64_split1": 80,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 2,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5337,
+            "FFN_M64_steps": 7,
+            "FFN_M1536_steps": 4664,
+            "FFN_M768_steps": 159,
+            "FFN_M512_steps": 167,
+            "FFN_M384_steps": 176,
+            "FFN_M256_steps": 119,
+            "FFN_M128_steps": 45
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H64_split1": 80,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        },
+        {
+          "rank": 3,
+          "new_owner_captures_after_screen": 0,
+          "warmup_plus_formal_steps": {
+            "owner_target_steps": 5337,
+            "FFN_M64_steps": 7,
+            "FFN_M1536_steps": 4664,
+            "FFN_M768_steps": 159,
+            "FFN_M512_steps": 167,
+            "FFN_M384_steps": 176,
+            "FFN_M256_steps": 119,
+            "FFN_M128_steps": 45
+          },
+          "launch_bindings": {
+            "M16_H16_split1": 16,
+            "M16_H16_split10": 304,
+            "M384_H64_split1": 80,
+            "M192_H16_split1": 320,
+            "M128_H16_split1": 16,
+            "M128_H16_split2": 304,
+            "M96_H16_split1": 16,
+            "M96_H16_split2": 304,
+            "M64_H16_split1": 16,
+            "M64_H16_split4": 304,
+            "M32_H16_split1": 16,
+            "M32_H16_split5": 304
+          },
+          "scope": "Step delta includes 512 warmups and 2560 formal requests; bindings count eager/capture launches, not graph replays."
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "Incremental comparison on current owner deployment; historical 1.19x is not a same-version main baseline",
+    "Two full service repetitions per mode; pair direction and repeat drift reported without a statistical significance claim",
+    "MTP and step deltas include preparation or warmups as labeled",
+    "No whole-model numerical equivalence or GSM8K accuracy acceptance",
+    "Text-based compilation scan does not instrument all possible JIT paths"
+  ],
+  "raw_evidence_location": "/shared/amdgpu/home/zufa_yu_qle/yifehuan_tmp/dsv41_commfusedmoe/validation/dashboard_abab_20261030",
+  "raw_evidence_sha256": {
+    "COMPARISON.json": "889c2be9256d968bd7f3de6ada8b72ce0bff2f11c2fdf9994daae716bfde893a",
+    "EXPERIMENT.json": "e41985014acf14a48199449ae6fc731790f3128c7b100b01cadef8ae9246e52e",
+    "FINAL_AUDIT.json": "fc85ef9aa1aced3955cf437c203a72f73cd8f8e7638577c15811459ea5a33445"
+  }
+}

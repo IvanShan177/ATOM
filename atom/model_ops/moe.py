@@ -5513,7 +5513,12 @@ class FusedMoE(torch.nn.Module):
         return final_hidden_states
 
     def supports_prequantized_input(self) -> bool:
-        """Native W4A8 group32 scales for TP4 or fixed V4.1 EP4 experts."""
+        """Native W4A8 group32 scales for TP4 or fixed V4.1 EP4 experts.
+
+        This explicit input entry dispatches through ``_run_experts``. A
+        separately installed BF16 comm-fused backend does not consume these
+        inputs; eligibility follows the prepared native weight layout.
+        """
         method = self.quant_method
         native_tp = self.tp_size == 4 and self.ep_size == 1
         native_ep = (
@@ -5542,7 +5547,6 @@ class FusedMoE(torch.nn.Module):
             and self.dp_size == 1
             and self.moe_parallel_config.dp_logical_ratio == 1
             and not self.reduce_results
-            and self._comm_fused_moe is None
             and self.balance_router_logits is None
             and not self.expert_layout.uses_dispatch_remap
             and self.num_fused_shared_experts == 0
