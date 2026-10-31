@@ -509,10 +509,14 @@ class OwnerServing:
 
         from .owner_cost_attention_chain import forward_owner
         from .owner_ffn_dispatch import finish_output, routed_forward
+        from .owner_ffn_supply import supplied_forward, supply_config
         from .owner_serving_kernels import sum_original_tp
 
         step, model = metadata.step, self.model
         capacity = step.width
+        supply_mode = os.environ.get("ATOM_DSV41_OWNER_FFN_SUPPLY", "native")
+        if supply_mode not in ("native", "once", "mhc"):
+            raise ValueError("ATOM_DSV41_OWNER_FFN_SUPPLY must be native, once or mhc")
         step.begin_forward()
         global_engram = (
             None if self.stable_graphs else metadata.engram_embeddings.parent
@@ -552,33 +556,58 @@ class OwnerServing:
                 self.rank,
                 sum_original_tp,
             )
-            normed, residual, pre, post, comb = Block.prepare_ffn(
-                layer, output, residual, pre, post, comb
-            )
-            packed = self.group.all_gather(
-                normed.reshape(capacity, 5120), use_custom=True, dim=0
-            )
             moe = layer.ffn
-            if _dual_stream_is_active(moe, packed.shape[0]):
-                main = torch.cuda.current_stream()
-                moe.alt_stream.wait_stream(main)
-                with torch.cuda.stream(moe.alt_stream):
-                    shared = moe.shared_experts(packed)
-                routed, complete = routed_forward(
-                    moe,
-                    packed,
-                    shared,
-                    wait_shared=lambda main=main, alt=moe.alt_stream: main.wait_stream(
-                        alt
-                    ),
-                )
-                main.wait_stream(moe.alt_stream)
-            else:
-                shared = moe.shared_experts(packed)
-                routed, complete = routed_forward(moe, packed, shared)
-            output = finish_output(
-                routed, shared, complete, self.rank, capacity, v41_mhc_reduce_scatter
+            supply = (
+                supply_config(moe, capacity, metadata, self.group)
+                if supply_mode != "native"
+                else None
             )
+            normed, residual, pre, post, comb = Block.prepare_ffn(
+                layer,
+                output,
+                residual,
+                pre,
+                post,
+                comb,
+                fuse_quant=(
+                    supply is not None
+                    and supply_mode == "mhc"
+                    and layer.hc_ffn_fn_packed is not None
+                ),
+            )
+            if supply is not None:
+                output = supplied_forward(
+                    moe, normed, supply, self.group, v41_mhc_reduce_scatter
+                )
+            else:
+                packed = self.group.all_gather(
+                    normed.reshape(capacity, 5120), use_custom=True, dim=0
+                )
+                if _dual_stream_is_active(moe, packed.shape[0]):
+                    main = torch.cuda.current_stream()
+                    moe.alt_stream.wait_stream(main)
+                    with torch.cuda.stream(moe.alt_stream):
+                        shared = moe.shared_experts(packed)
+                    routed, complete = routed_forward(
+                        moe,
+                        packed,
+                        shared,
+                        wait_shared=lambda main=main, alt=moe.alt_stream: main.wait_stream(
+                            alt
+                        ),
+                    )
+                    main.wait_stream(moe.alt_stream)
+                else:
+                    shared = moe.shared_experts(packed)
+                    routed, complete = routed_forward(moe, packed, shared)
+                output = finish_output(
+                    routed,
+                    shared,
+                    complete,
+                    self.rank,
+                    capacity,
+                    v41_mhc_reduce_scatter,
+                )
             state = Block.finish_ffn(layer, output, residual, pre, post, comb)
         if isinstance(global_engram, EngramStagedRows):
             global_engram.join()

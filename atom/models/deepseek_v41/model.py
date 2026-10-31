@@ -186,10 +186,13 @@ class Block(nn.Module):
         *,
         row_sharded=False,
         original_rows=None,
+        fuse_quant=False,
     ):
         # The attention post folds into this seam: one kernel pair computes the
         # new residual, the gates and the normed FFN input.
         hc_fn = self.hc_ffn_fn_packed
+        if fuse_quant and (hc_fn is None or row_sharded):
+            raise ValueError("FFN fused quantization requires local HIP mHC")
         residual, normed, pre, post, comb = pre_delayed(
             residual,
             pre,
@@ -200,6 +203,7 @@ class Block(nn.Module):
             **self.hc_options,
             norm_eps=self.ffn_norm.eps,
             w_preshuffle_bf16=hc_fn is not None,
+            fuse_quant=fuse_quant,
             sublayer_output=output,
             post_mix=post,
             combination=comb,
