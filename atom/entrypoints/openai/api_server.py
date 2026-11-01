@@ -28,7 +28,7 @@ from asyncio import AbstractEventLoop
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import uvicorn
@@ -89,6 +89,7 @@ from .chat_encoders import (
     resolve_reasoning_toggle,
 )
 from .fim import FimFormat, resolve_fim_format
+from .images import chat_image_parts, check_image_roles, load_images
 from .metrics_setup import create_metrics_exporter
 from .prefix_completion import continue_prompt, take_assistant_prefix
 from .protocol import (
@@ -96,6 +97,7 @@ from .protocol import (
     DEFAULT_TOP_K,
     DEFAULT_TOP_P,
     ChatCompletionRequest,
+    ChatMessage,
     CompletionRequest,
     ModelCard,
     ModelList,
@@ -187,6 +189,11 @@ from .tool_parser.registry import (
 
 # Configure logging
 logger = logging.getLogger("atom")
+
+# Which roles may carry images, by API (DeepSeek's vision contract). A tool
+# role holds a tool result, which Responses and Anthropic allow images in.
+CHAT_IMAGE_ROLES = frozenset({"user"})
+TOOL_RESULT_IMAGE_ROLES = frozenset({"user", "tool"})
 
 # Constants
 DEFAULT_HOST = "0.0.0.0"
@@ -723,6 +730,10 @@ def _has_multimodal_content(messages: list[Any]) -> bool:
     )
 
 
+def _role_contents(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    return [{"role": m.role, "content": m.content} for m in messages]
+
+
 def _get_multimodal_processor():
     global processor
     if processor is None:
@@ -748,15 +759,17 @@ def _prepare_multimodal_inputs(
     tools: Any = None,
 ) -> tuple[list[int], dict[str, Any]]:
     conversation, media = parse_chat_messages(
-        [
-            {
-                **message.to_template_dict(
-                    preserve_tool_call_arguments=preserve_tool_call_arguments
-                ),
-                "content": message.content,
-            }
-            for message in messages
-        ]
+        load_images(
+            [
+                {
+                    **message.to_template_dict(
+                        preserve_tool_call_arguments=preserve_tool_call_arguments
+                    ),
+                    "content": message.content,
+                }
+                for message in messages
+            ]
+        )
     )
     return prepare_multimodal_inputs(
         _get_engine_config(),
@@ -766,6 +779,79 @@ def _prepare_multimodal_inputs(
         chat_template_kwargs,
         tools=tools,
     )
+
+
+@dataclass(frozen=True)
+class RenderedPrompt:
+    """What generation starts from: text, or token IDs with their images."""
+
+    prompt: str | list[int]
+    multimodal_data: dict[str, Any] | None = None
+
+    def opens_reasoning(self) -> bool:
+        if isinstance(self.prompt, str):
+            return prompt_starts_in_reasoning(self.prompt)
+        return prompt_tokens_start_in_reasoning(self.prompt, tokenizer.decode)
+
+    def num_tokens(self) -> int:
+        if isinstance(self.prompt, str):
+            return len(tokenizer.encode(self.prompt))
+        return len(self.prompt)
+
+    def truncated(self, max_tokens: int) -> "RenderedPrompt":
+        """The text prompt cut to ``max_tokens``; images cannot be cut."""
+        if self.multimodal_data is not None:
+            raise ValueError(
+                f"prompt with images is {self.num_tokens()} tokens, more than "
+                f"the {max_tokens} that fit the context"
+            )
+        token_ids = tokenizer.encode(self.prompt)[:max_tokens]
+        return RenderedPrompt(tokenizer.decode(token_ids, skip_special_tokens=False))
+
+    def generate(self, sampling_params, request_id, **kwargs):
+        """The non-streaming generator for this prompt."""
+        if self.multimodal_data is None:
+            return generate_async(self.prompt, sampling_params, request_id, **kwargs)
+        # Empty here: `_render_prompt` refuses images with a P/D handoff.
+        kwargs.pop("kv_transfer_params", None)
+        return generate_async_multimodal(
+            self.prompt, self.multimodal_data, sampling_params, request_id, **kwargs
+        )
+
+
+async def _render_prompt(
+    messages: list[ChatMessage],
+    template_kwargs: dict[str, Any],
+    *,
+    tools: Any,
+    image_roles: frozenset[str],
+    kv_transfer_params: dict[str, Any] | None = None,
+) -> RenderedPrompt:
+    """Render chat-shaped messages, with any images loaded and placed."""
+    if not _has_multimodal_content(messages):
+        return RenderedPrompt(
+            apply_chat_template(
+                tokenizer,
+                custom_message_encoder,
+                messages,
+                tools=tools,
+                preserve_tool_call_arguments=preserve_tool_call_arguments,
+                **template_kwargs,
+            )
+        )
+    check_image_roles(_role_contents(messages), image_roles)
+    if kv_transfer_params:
+        raise ValueError("image input is not supported with P/D transfer")
+    # Same off-loop preparation as the chat path.
+    _get_multimodal_processor()
+    tokens, data = await asyncio.get_running_loop().run_in_executor(
+        None,
+        _prepare_multimodal_inputs,
+        messages,
+        template_kwargs,
+        tools,
+    )
+    return RenderedPrompt(tokens, data)
 
 
 # ── Batched stream dispatch ──────────────────────────────────────────────
@@ -1872,6 +1958,9 @@ async def _chat_completions(
             raise ValueError(
                 "assistant prefix completion is served by /beta/chat/completions"
             )
+        for message in messages:
+            message.content = chat_image_parts(message.content)
+        check_image_roles(_role_contents(messages), CHAT_IMAGE_ROLES)
 
         merged_kwargs = dict(default_chat_template_kwargs)
         if request.chat_template_kwargs:
@@ -2432,13 +2521,12 @@ async def anthropic_messages(request: AnthropicMessagesRequest, raw_request: Req
         # no such spelling, and are not answered here or on the chat path.
         if forbids_tool_calls(request.tool_choice):
             merged_kwargs["tool_choice"] = "none"
-        prompt = apply_chat_template(
-            tokenizer,
-            custom_message_encoder,
+        rendered = await _render_prompt(
             messages,
+            merged_kwargs,
             tools=anthropic_to_openai_tools(request.tools),
-            preserve_tool_call_arguments=preserve_tool_call_arguments,
-            **merged_kwargs,
+            image_roles=TOOL_RESULT_IMAGE_ROLES,
+            kv_transfer_params=request.kv_transfer_params,
         )
 
         generation_config = engine.config.generation_config
@@ -2469,7 +2557,7 @@ async def anthropic_messages(request: AnthropicMessagesRequest, raw_request: Req
         request_id = uuid.uuid4().hex[:24]
         set_request_id(request_id)
         kv_transfer_params = _engine_kv_transfer_params(request.kv_transfer_params)
-        input_tokens = len(tokenizer.encode(prompt))
+        input_tokens = rendered.num_tokens()
 
         max_ctx = None
         for _path in (
@@ -2497,18 +2585,18 @@ async def anthropic_messages(request: AnthropicMessagesRequest, raw_request: Req
             logger.warning(
                 f"Prompt too long ({input_tokens} > {max_input}), truncating"
             )
-            token_ids = tokenizer.encode(prompt)[:max_input]
-            prompt = tokenizer.decode(token_ids, skip_special_tokens=False)
+            rendered = rendered.truncated(max_input)
             input_tokens = max_input
 
         if request.stream:
             # Streaming response
             seq_id, stream_collector, _num_prompt_tokens = (
                 await setup_streaming_request(
-                    prompt,
+                    rendered.prompt,
                     sampling_params,
                     request_id,
                     kv_transfer_params=kv_transfer_params,
+                    multimodal_data=rendered.multimodal_data,
                 )
             )
 
@@ -2528,7 +2616,7 @@ async def anthropic_messages(request: AnthropicMessagesRequest, raw_request: Req
                 # it is the model's, resolved at startup -- the filter used to
                 # carry none and closed on any registered dialect's marker.
                 reasoning_filter = reasoning_channel(
-                    prompt_starts_in_reasoning(prompt),
+                    rendered.opens_reasoning(),
                     template_kwargs=merged_kwargs,
                 ).stream()
                 tool_parser = ToolCallStreamParser(
@@ -2680,8 +2768,7 @@ async def anthropic_messages(request: AnthropicMessagesRequest, raw_request: Req
 
         # Non-streaming response
         final_output = await _run_nonstream_with_disconnect(
-            generate_async(
-                prompt,
+            rendered.generate(
                 sampling_params,
                 request_id,
                 kv_transfer_params=kv_transfer_params,
@@ -2703,7 +2790,7 @@ async def anthropic_messages(request: AnthropicMessagesRequest, raw_request: Req
         # `(reasoning, content)` and lost the interleaving at that line.
         events = read_whole_blocks(
             reasoning_channel(
-                prompt_starts_in_reasoning(prompt),
+                rendered.opens_reasoning(),
                 template_kwargs=merged_kwargs,
             ),
             tool_call_parser_cls,
@@ -2864,13 +2951,12 @@ async def responses_create(raw_request: Request):
             rules=rules,
         )
 
-        prompt = apply_chat_template(
-            tokenizer,
-            custom_message_encoder,
+        rendered = await _render_prompt(
             messages,
+            merged_kwargs,
             tools=openai_tools,
-            preserve_tool_call_arguments=preserve_tool_call_arguments,
-            **merged_kwargs,
+            image_roles=TOOL_RESULT_IMAGE_ROLES,
+            kv_transfer_params=kv_transfer_params,
         )
 
         generation_config = engine.config.generation_config
@@ -2909,7 +2995,7 @@ async def responses_create(raw_request: Request):
         schema = schema_from_format((text_config or {}).get("format"), responses=True)
         request_id = f"resp_{uuid.uuid4().hex[:24]}"
         set_request_id(request_id)
-        input_tokens = len(tokenizer.encode(prompt))
+        input_tokens = rendered.num_tokens()
 
         max_ctx = 30720
         for obj in (
@@ -2930,13 +3016,12 @@ async def responses_create(raw_request: Request):
             logger.warning(
                 f"Prompt too long ({input_tokens} > {max_input}), truncating"
             )
-            token_ids = tokenizer.encode(prompt)[:max_input]
-            prompt = tokenizer.decode(token_ids, skip_special_tokens=False)
+            rendered = rendered.truncated(max_input)
             input_tokens = max_input
 
         created_at = int(time.time())
         _reasoning = reasoning_channel(
-            prompt_starts_in_reasoning(prompt), template_kwargs=merged_kwargs
+            rendered.opens_reasoning(), template_kwargs=merged_kwargs
         )
         await _configure_structured_output(
             sampling_params,
@@ -2952,10 +3037,11 @@ async def responses_create(raw_request: Request):
         if request.stream:
             seq_id, stream_collector, _num_prompt_tokens = (
                 await setup_streaming_request(
-                    prompt,
+                    rendered.prompt,
                     sampling_params,
                     request_id,
                     kv_transfer_params=kv_transfer_params,
+                    multimodal_data=rendered.multimodal_data,
                 )
             )
 
@@ -3064,8 +3150,7 @@ async def responses_create(raw_request: Request):
             )
 
         final_output = await _run_nonstream_with_disconnect(
-            generate_async(
-                prompt,
+            rendered.generate(
                 sampling_params,
                 request_id,
                 kv_transfer_params=kv_transfer_params,
