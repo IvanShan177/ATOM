@@ -2,6 +2,7 @@
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
 import ctypes
+import dataclasses
 import gc
 import inspect
 import logging
@@ -2069,7 +2070,7 @@ class ModelRunner:
             "state_runtime": state_runtime.to_wire(),
             # What the block manager frees a windowed draft's blocks by.
             "draft_window": (
-                draft.window.to_wire()
+                dataclasses.asdict(draft.window)
                 if draft is not None and draft.window is not None
                 else None
             ),

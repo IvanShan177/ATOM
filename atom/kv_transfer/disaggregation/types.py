@@ -316,9 +316,8 @@ class KVTransferTensors:
     # transfer have to agree; a request between disagreeing ones fails.
     draft_layout: str | None = None
     # The "window" layout's regions, addressed by the draft pool's own block
-    # ids, `num_draft_blocks` of them; never walked by a target-block path.
+    # ids; never walked by a target-block path.
     draft_pages: list[PageRegion] = field(default_factory=list)
-    num_draft_blocks: int = 0
 
     @property
     def block_regions(self) -> tuple[KVTransferRegion, ...]:

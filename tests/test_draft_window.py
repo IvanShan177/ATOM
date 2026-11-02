@@ -16,6 +16,7 @@ Runs on CPU, without aiter.
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
 import numpy as np
@@ -85,10 +86,6 @@ def test_blocks_per_req_bounds_every_run_a_sequence_holds():
     assert geo.blocks_per_req == 34
 
 
-def test_geometry_survives_the_trip_to_the_engine():
-    assert DraftWindowGeometry.from_wire(M31.to_wire()) == M31
-
-
 def test_pages_must_tile_the_blocks():
     with pytest.raises(ValueError, match="do not tile"):
         DraftWindowGeometry(window=64, read_page=48, block_size=128, spec_tokens=1)
@@ -108,7 +105,7 @@ def _bm(*, blocks=64, draft_blocks=32, prefix=True, geo=SMALL):
         kv_cache_block_size=geo.block_size,
         enable_prefix_caching=prefix,
         pool_entries={DRAFT_WINDOW_CLASS: draft_blocks},
-        draft_window_geometry=geo.to_wire(),
+        draft_window_geometry=dataclasses.asdict(geo),
     )
     return BlockManager(cfg)
 

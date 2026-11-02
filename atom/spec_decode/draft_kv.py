@@ -366,7 +366,6 @@ class DraftKvBuilder(PoolRowsMixin):
             transfer_tensors.draft_layout = "full"
             return
         transfer_tensors.draft_pages = draft.pages
-        transfer_tensors.num_draft_blocks = self.num_blocks
         transfer_tensors.draft_layout = "window"
         for page in draft.pages:
             region = page.region
@@ -378,11 +377,6 @@ class DraftKvBuilder(PoolRowsMixin):
                 )
 
     # ------------------------- windowed step staging ------------------------- #
-    @property
-    def window_table_width(self) -> int:
-        """Blocks a forward's per-request window table holds."""
-        return self.window.blocks_per_req + _WINDOW_TABLE_SLACK
-
     def step_buffers(self) -> dict[str, CpuGpuBuffer]:
         """The per-forward staging a windowed pool reads, for `forward_vars`.
 
@@ -399,7 +393,9 @@ class DraftKvBuilder(PoolRowsMixin):
         i64 = {"dtype": torch.int64, "device": runner.device, "pin_memory": pinned}
         return {
             # Each request's held run of draft block ids, from its first block.
-            "draft_window_tables": CpuGpuBuffer(max_bs, self.window_table_width, **i32),
+            "draft_window_tables": CpuGpuBuffer(
+                max_bs, self.window.blocks_per_req + _WINDOW_TABLE_SLACK, **i32
+            ),
             "draft_window_first": CpuGpuBuffer(max_bs, **i32),
             # The block its table reaches, on the host: what the block pass
             # caps a request's reads and writes at.

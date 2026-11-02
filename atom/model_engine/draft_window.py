@@ -113,23 +113,6 @@ class DraftWindowGeometry:
             for finalized in range(1, self.window + 2 * bs + 1)
         )
 
-    def to_wire(self) -> dict[str, int]:
-        return {
-            "window": self.window,
-            "read_page": self.read_page,
-            "block_size": self.block_size,
-            "spec_tokens": self.spec_tokens,
-        }
-
-    @classmethod
-    def from_wire(cls, wire: dict) -> DraftWindowGeometry:
-        return cls(
-            window=int(wire["window"]),
-            read_page=int(wire["read_page"]),
-            block_size=int(wire["block_size"]),
-            spec_tokens=int(wire["spec_tokens"]),
-        )
-
 
 class DraftWindowPool:
     """The scheduler's half of a windowed draft KV pool.
@@ -165,7 +148,7 @@ class DraftWindowPool:
             DRAFT_WINDOW_CLASS, 0
         )
         wire = getattr(config, "draft_window_geometry", None)
-        geometry = DraftWindowGeometry.from_wire(wire) if wire else None
+        geometry = DraftWindowGeometry(**wire) if wire else None
         return cls(
             int(entries),
             geometry,
@@ -297,14 +280,6 @@ class DraftWindowPool:
         if i < len(table) and table[i] >= 0:
             self.pool.publish(table[i], h, token_ids)
 
-    def window(self, seq) -> tuple[int, list[int]]:
-        """`(first block held, the held ids)`: what a forward reads and writes."""
-        start = seq.draft_window_start
-        return start, list(seq.draft_block_table[start:])
-
     def clear_index(self) -> None:
         if self.enabled:
             self.pool.clear_index()
-
-    def stats(self) -> dict[str, int]:
-        return self.pool.eviction_stats()

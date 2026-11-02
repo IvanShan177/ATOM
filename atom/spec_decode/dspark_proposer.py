@@ -404,7 +404,7 @@ class DSparkProposer(Drafter):
         builder = draft_kv_builder(
             self.runner,
             draft_hf,
-            read_window=getattr(model, "kv_read_window", None),
+            read_window=model.kv_read_window,
             spec_tokens=self.mtp_k,
         )
         if builder is not None:

@@ -39,7 +39,7 @@ def _regions(base: int, roles=("draft.k.layer_0", "draft.v.layer_0")):
     ]
 
 
-def _producer(regions, *, layout="window", max_entries=1024):
+def _producer(regions, *, layout="window"):
     writes = []
 
     def rdma_write(target, src, dst, sizes, req_id, label, *, engine, deadline):
@@ -50,7 +50,6 @@ def _producer(regions, *, layout="window", max_entries=1024):
         SimpleNamespace(
             _draft_layout=layout,
             _draft_regions=regions,
-            _MAX_RDMA_ENTRIES_PER_BATCH=max_entries,
             _rdma_write=rdma_write,
         ),
         writes,

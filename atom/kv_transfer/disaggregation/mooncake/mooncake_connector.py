@@ -1867,7 +1867,7 @@ class MooncakeConnector(KVConnectorBase):
                 # request whose layout is not its own.
                 "consumer_draft_layout": self._draft_layout,
                 "dst_draft_block_ids": meta.local_draft_block_ids[off:],
-                "src_draft_block_ids": (meta.remote_draft_block_ids or [])[off:],
+                "src_draft_block_ids": meta.remote_draft_block_ids[off:],
                 "consumer_draft_regions": [asdict(r) for r in self._draft_regions],
                 "chunked_transfer": meta.chunked_transfer,
                 "prompt_digest": meta.prompt_digest,
@@ -3007,25 +3007,12 @@ class MooncakeConnector(KVConnectorBase):
         src_addrs: list[int] = []
         dst_addrs: list[int] = []
         sizes: list[int] = []
-        deadline = request_data.get("_deadline")
         for src_region, dst_region in zip(self._draft_regions, consumer_regions):
             for src, dst in pairs:
                 src_addrs.append(src_region.unit_addr(src))
                 dst_addrs.append(dst_region.unit_addr(dst))
                 sizes.append(src_region.unit_bytes)
-                if len(src_addrs) == self._MAX_RDMA_ENTRIES_PER_BATCH:
-                    if not self._rdma_write(
-                        target,
-                        src_addrs,
-                        dst_addrs,
-                        sizes,
-                        req_id,
-                        "draft",
-                        engine=engine,
-                        deadline=deadline,
-                    ):
-                        return False
-                    src_addrs, dst_addrs, sizes = [], [], []
+        # `_rdma_write` splits into `_MAX_RDMA_ENTRIES_PER_BATCH` chunks itself.
         if src_addrs and not self._rdma_write(
             target,
             src_addrs,
@@ -3034,7 +3021,7 @@ class MooncakeConnector(KVConnectorBase):
             req_id,
             "draft",
             engine=engine,
-            deadline=deadline,
+            deadline=request_data.get("_deadline"),
         ):
             return False
         logger.debug(
