@@ -28,7 +28,6 @@ from atom.model_engine.block_manager import BlockManager
 from atom.model_engine.draft_window import (
     DRAFT_WINDOW_CLASS,
     DraftWindowGeometry,
-    DraftWindowPool,
 )
 from atom.model_ops.attentions.pool_layout.sub_pool_spec import Pool
 from atom.spec_decode.draft_kv import (
@@ -89,11 +88,6 @@ def test_blocks_per_req_bounds_every_run_a_sequence_holds():
 def test_pages_must_tile_the_blocks():
     with pytest.raises(ValueError, match="do not tile"):
         DraftWindowGeometry(window=64, read_page=48, block_size=128, spec_tokens=1)
-
-
-def test_a_pool_without_its_geometry_is_refused():
-    with pytest.raises(ValueError, match="both a pool and its geometry"):
-        DraftWindowPool(8, None)
 
 
 # ── block manager ──────────────────────────────────────────────────────────

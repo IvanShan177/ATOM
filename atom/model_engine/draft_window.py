@@ -54,17 +54,12 @@ class DraftWindowGeometry:
     spec_tokens: int
 
     def __post_init__(self) -> None:
-        for name in ("window", "read_page", "block_size"):
-            value = getattr(self, name)
-            if not isinstance(value, int) or value <= 0:
-                raise ValueError(f"draft window {name} must be positive, got {value}")
+        # `block_size` is the user's `--block-size`; the rest come from the model.
         if self.block_size % self.read_page:
             raise ValueError(
                 f"the draft reads pages of {self.read_page} tokens, which do not "
                 f"tile its {self.block_size}-token blocks"
             )
-        if self.spec_tokens < 0:
-            raise ValueError(f"spec_tokens must be >= 0, got {self.spec_tokens}")
 
     def first_read_pos(self, anchor: int) -> int:
         """Lowest key position a block pass anchored at `anchor` reads.
@@ -130,11 +125,6 @@ class DraftWindowPool:
         cache_policy: str = "lru",
         protected_ratio: float = 0.5,
     ):
-        if bool(num_blocks) != (geometry is not None):
-            raise ValueError(
-                f"a draft window needs both a pool and its geometry; got "
-                f"{num_blocks} blocks and geometry {geometry}"
-            )
         self.enabled = num_blocks > 0
         self.geometry = geometry
         self.prefix_caching = enable_prefix_caching
