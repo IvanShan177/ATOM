@@ -84,13 +84,6 @@ def draft_window_geometry(
     )
 
 
-def _kv_connectors(kv_config) -> list[dict]:
-    if not isinstance(kv_config, dict) or not kv_config:
-        return []
-    subs = kv_config.get("connectors", [])
-    return [kv_config] + [c for sub in subs for c in _kv_connectors(sub)]
-
-
 def refuse_unsupported_draft_window(config) -> None:
     """Refuse, at startup, the deployments a windowed draft pool does not run in.
 
@@ -98,17 +91,22 @@ def refuse_unsupported_draft_window(config) -> None:
     target's block ids, which is the silent kind of wrong: the draft attends
     rows nobody wrote and only its acceptance says so.
     """
+    # The factory's own walk and names: an omitted `kv_connector` is MoRI-IO
+    # and names fold case, so the raw strings are not what runs. None is a
+    # malformed `multi`, which the connector build refuses on its own.
+    from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
+
     why = None
     if config.pipeline_parallel_size > 1:
         why = "pipeline parallelism (the head schedules a pool its last stage sizes)"
     elif config.enable_rapidserve:
         why = "RapidServe (the decode side imports a pool laid out by block id)"
-    for connector in _kv_connectors(getattr(config, "kv_transfer_config", None)):
+    for name, leaf in KVConnectorFactory.leaf_connectors(config) or ():
         if why is not None:
             break
-        if connector.get("kv_connector") == "moriio":
+        if name == "moriio":
             why = "the MoRI-IO connector (it transfers draft rows by target block)"
-        elif connector.get("enable_chunked_transfer"):
+        elif leaf.kv_transfer_config.get("enable_chunked_transfer"):
             why = "chunked P/D transfer (it sends draft rows chunk by chunk)"
     if why is not None:
         raise ValueError(

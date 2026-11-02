@@ -443,6 +443,27 @@ def test_the_windowed_pool_is_a_state_class_sized_to_the_running_windows():
         ({"pipeline_parallel_size": 2}, "pipeline parallelism"),
         ({"enable_rapidserve": True}, "RapidServe"),
         ({"kv_transfer_config": {"kv_connector": "moriio"}}, "MoRI-IO"),
+        # Named the way the factory resolves them, not as raw strings: an
+        # omitted connector is MoRI-IO, and names fold case.
+        ({"kv_transfer_config": {"kv_role": "kv_producer"}}, "MoRI-IO"),
+        (
+            {
+                "kv_transfer_config": {
+                    "kv_connector": "MoRIIO",
+                    "kv_role": "kv_producer",
+                }
+            },
+            "MoRI-IO",
+        ),
+        (
+            {
+                "kv_transfer_config": {
+                    "kv_connector": "multi",
+                    "connectors": [{"kv_role": "kv_producer"}],
+                }
+            },
+            "MoRI-IO",
+        ),
         (
             {
                 "kv_transfer_config": {

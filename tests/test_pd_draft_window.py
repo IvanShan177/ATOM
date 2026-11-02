@@ -99,6 +99,23 @@ def test_a_needed_block_the_producer_lacks_fails_the_request():
     assert writes == []
 
 
+@pytest.mark.parametrize(
+    "dst_ids, src_ids",
+    [([5], [64]), ([64], [4]), ([1 << 40], [4])],
+    ids=["src-past-the-pool", "dst-past-the-pool", "dst-far-past"],
+)
+def test_ids_outside_the_pools_fail_the_request(dst_ids, src_ids):
+    # The ids come over the wire; 64 is one block past a 64-block region.
+    mc = _mooncake()
+    producer, writes = _producer(_regions(0x1000_0000))
+    request = _request(dst_ids, src_ids, _regions(0x9000_0000))
+    with pytest.raises(RuntimeError, match="outside the pools"):
+        mc.MooncakeConnector._execute_draft_window_transfer(
+            producer, request, "peer", "req"
+        )
+    assert writes == []
+
+
 def test_regions_that_do_not_pair_fail_the_request():
     mc = _mooncake()
     producer, _ = _producer(_regions(0x1000_0000))

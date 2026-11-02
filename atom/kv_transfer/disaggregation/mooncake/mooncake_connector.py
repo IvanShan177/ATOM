@@ -2979,6 +2979,14 @@ class MooncakeConnector(KVConnectorBase):
                     f"{src.unit_bytes} B meets {dst.semantic_role!r} of "
                     f"{dst.unit_bytes} B"
                 )
+        # The ids come over the wire: bound each by the units its side's
+        # regions hold before any address is formed from it.
+        src_units = min(
+            (r.total_bytes // r.unit_bytes for r in self._draft_regions), default=0
+        )
+        dst_units = min(
+            (r.total_bytes // r.unit_bytes for r in consumer_regions), default=0
+        )
         pairs = []
         for i, dst in enumerate(dst_ids):
             if dst < 0:
@@ -2988,6 +2996,12 @@ class MooncakeConnector(KVConnectorBase):
                 raise RuntimeError(
                     f"req {req_id}: the consumer's draft window reaches block "
                     f"{i} past its cached prefix, which this producer does not hold"
+                )
+            if src >= src_units or dst >= dst_units:
+                raise RuntimeError(
+                    f"req {req_id}: draft block pair {src} -> {dst} at {i} is "
+                    f"outside the pools ({src_units} producer, {dst_units} "
+                    "consumer blocks)"
                 )
             pairs.append((src, dst))
         src_addrs: list[int] = []
