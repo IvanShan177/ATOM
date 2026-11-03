@@ -41,7 +41,7 @@ class RoleGpusTest(unittest.TestCase):
         env = {
             "PATH": os.environ["PATH"],
             "NODE_RANK": str(node_rank),
-            "xP": "1",
+            "NODE_ROLE": "prefill" if node_rank == 0 else "decode",
             "AGGREGATED": "0",
             "PREFILL_SINGLE_NODE_PD": "0",
             "PREFILL_TP_SIZE": "1",
