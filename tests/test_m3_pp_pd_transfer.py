@@ -152,6 +152,11 @@ def _draft_tensors(heads, kv_dtype=torch.float8_e4m3fn):
     return builder.get_kv_transfer_tensors()
 
 
+def _unit(role):
+    """A region's name without the per-rank head count a head cut changes."""
+    return "mha." + role.split(".", 2)[2] if role.startswith("mha.") else role
+
+
 def _transfer(layer_nums, heads, draft=False, kv_dtype=torch.float8_e4m3fn):
     sparse = [
         CONFIG.sparse_attention_config["sparse_attention_freq"][i] for i in layer_nums
@@ -173,11 +178,15 @@ def test_m3_units_are_named_by_global_layer_and_split_by_head():
         assert original.view.data_ptr() == annotated.view.data_ptr()
     assert tt.state_backend is builder and tt.num_blocks == 4
     assert tt.block_region_consumer_indices == [15, 16, 75, 76, 135, 136, 195, 196, 247]
-    assert tt.block_region_consumer_count == 270
+    # The backend's names, with the row an unsplit model gives the unit: the
+    # layer for KV, the slot among sparse layers for the index.
+    geometry = raw.pages[0].region.semantic_role.split(".")[1]
     runs = {p.region.semantic_role: p.head_major_runs for p in tt.pages}
-    assert runs["m3.layer_15.k"] == runs["m3.layer_15.v_scale"] == (8, 4)
-    assert runs["m3.layer_16.v"] == (1, 4)  # dense: one page-128 run
-    assert runs["m3.layer_15.index"] is None and "m3.layer_16.index" not in runs
+    name = f"mha.{geometry}.{{}}.layer_{{}}".format
+    assert runs[name("k", 15)] == runs[name("v_scale", 15)] == (8, 4)
+    assert runs[name("v", 16)] == (1, 4)  # dense: one page-128 run
+    index_roles = [r for r in runs if ".index." in r]
+    assert len(index_roles) == 1 and runs[index_roles[0]] is None
     # LMCache MP takes the same units, still one stored shard per rank.
     assert tt.tp_replication_factor == 1
     tt.set_block_count(4)
@@ -192,7 +201,6 @@ def test_no_sparse_schedule_has_no_global_index_regions(schedule):
     )
     tt = _export(_m3_builder([1], [False], 4, config))
     assert tt.block_region_consumer_indices == [1, 4, 7, 10]
-    assert tt.block_region_consumer_count == 12
 
 
 def test_text_wrapper_forwards_layout_before_draft_is_appended():
@@ -214,7 +222,6 @@ def test_runner_without_model_hook_keeps_generic_mha_layout():
     assert _layout(tt)[: len(raw.pages)] == _layout(raw)
     assert all(r.semantic_role.startswith("mha.") for r in raw.block_regions)
     assert tt.block_region_consumer_indices is None
-    assert tt.block_region_consumer_count is None
     assert tt.state_backend is builder and tt.num_blocks == 4
 
 
@@ -286,16 +293,12 @@ def test_mla_export_preserves_compact_layers_mtp_and_scale_offsets(
     expected = kv_indices + index_indices
     if fp4:
         expected += [i + len(global_index) for i in index_indices]
-    count = len(target) + 1 + len(global_index) * (2 if fp4 else 1)
     assert transfer.block_region_consumer_indices == expected
-    assert transfer.block_region_consumer_count == count
     assert len(transfer.pages) == len(expected)
-    # A separate contributor starts after the full target/MTP layout, even
-    # though this stage holds only a subset of those regions.
+    # A separate contributor lands on the consumer's last regions, wherever
+    # this stage's subset of the target/MTP layout ends.
     transfer.merge_pages(_draft_tensors(1))
-    assert transfer.block_region_consumer_indices[len(expected) :] == list(
-        range(count, count + 8)
-    )
+    assert transfer.block_region_consumer_indices[len(expected) :] == list(range(-8, 0))
 
 
 @pytest.mark.parametrize("heads", [1, 4])
@@ -307,16 +310,18 @@ def test_mla_export_preserves_compact_layers_mtp_and_scale_offsets(
 def test_every_stage_maps_into_the_full_consumer_layout(heads, kv_dtype, draft, stages):
     consumer = _transfer(list(range(8)), 1, draft, kv_dtype)
     roles = [r.semantic_role for r in consumer.block_regions]
+    n = len(consumer.pages)
     all_indices = []
     for held in stages:
         tt = _transfer(held, heads, draft and held[-1] == 7, kv_dtype)
         assert len(tt.block_region_consumer_indices) == len(tt.pages)
-        for page, idx in zip(tt.pages, tt.block_region_consumer_indices):
-            assert page.region.semantic_role == roles[idx]
-        all_indices.extend(tt.block_region_consumer_indices)
-    assert sorted(all_indices) == list(range(len(consumer.pages)))
-    assert consumer.block_region_consumer_count == len(consumer.pages)
-    assert consumer.block_region_consumer_indices == list(range(len(consumer.pages)))
+        # Negative: counted from the consumer's end (the appended draft).
+        indices = [i % n for i in tt.block_region_consumer_indices]
+        for page, idx in zip(tt.pages, indices):
+            assert _unit(page.region.semantic_role) == _unit(roles[idx])
+        all_indices.extend(indices)
+    assert sorted(all_indices) == list(range(n))
+    assert [i % n for i in consumer.block_region_consumer_indices] == list(range(n))
 
 
 def test_page16_runs_are_how_the_sparse_writer_lays_heads_out():
@@ -330,7 +335,7 @@ def test_page16_runs_are_how_the_sparse_writer_lays_heads_out():
         for head in range(4):
             view[:, head].fill_(head + 1)
     for page in _export(builder).pages:
-        if page.region.semantic_role in ("m3.layer_15.k", "m3.layer_15.v"):
+        if page.region.semantic_role.endswith((".k.layer_15", ".v.layer_15")):
             unit = page.view[2].view(8, 4, -1)
             for head in range(4):
                 assert torch.all(unit[:, head] == head + 1)
@@ -408,7 +413,7 @@ def test_stage_fills_each_tp4_rank_with_its_head(heads, held):
         # Both layouts come from the real exporters. The consumer has all layers.
         theirs = _layout(_transfer(list(range(8)), 1, draft=True))
         bases = [mem.add(blocks * b, False) for _, _, b in theirs]
-        consumers.append({r: (a, b) for (r, _, b), a in zip(theirs, bases)})
+        consumers.append({_unit(r): (a, b) for (r, _, b), a in zip(theirs, bases)})
         assert producer._execute_block_transfer(
             {
                 "consumer_base_addrs": bases,
@@ -426,7 +431,7 @@ def test_stage_fills_each_tp4_rank_with_its_head(heads, held):
     for (role, runs, bpb), base in zip(layout, producer.kv_caches_base_addr):
         src = mem.at(base, blocks * bpb).reshape(blocks, -1)
         for rank, regions in enumerate(consumers):
-            dst_base, dst_bpb = regions[role]
+            dst_base, dst_bpb = regions[_unit(role)]
             dst = mem.at(dst_base, blocks * dst_bpb).reshape(blocks, -1)
             for s, d in zip(src_ids, dst_ids):
                 want = (
@@ -436,7 +441,7 @@ def test_stage_fills_each_tp4_rank_with_its_head(heads, held):
                 )
                 assert np.array_equal(dst[d], want.ravel()), (role, rank)
             assert not dst[[1, 3]].any()
-    held_roles = {role for role, _, _ in layout}
+    held_roles = {_unit(role) for role, _, _ in layout}
     for regions in consumers:
         for role, (base, bpb) in regions.items():
             if role not in held_roles:
@@ -468,3 +473,63 @@ def test_incompatible_consumer_layout_is_refused(bad_layout):
             "bad-layout",
         )
     assert mem.writes == 0
+
+
+def test_an_unsplit_model_keeps_the_backend_names():
+    """Only PP renumbers rows, so TP4 -> TP4 P/D and LMCache MP see the names
+    an unannotated backend gives (a peer on either version agrees)."""
+    builder = _m3_builder(
+        list(range(8)),
+        [CONFIG.sparse_attention_config["sparse_attention_freq"][i] for i in range(8)],
+        1,
+        CONFIG,
+    )
+    raw = [r.semantic_role for r in builder.get_kv_transfer_tensors().block_regions]
+    assert [r.semantic_role for r in _export(builder).block_regions] == raw
+
+
+def test_an_older_consumer_is_refused_by_layout_not_a_key_error():
+    """A consumer that does not describe its head runs gets no head cut; the
+    layout checks then name the region that differs."""
+    mem = _Memory()
+    producer = _producer(_transfer([7], 4, draft=True), mem, 4, 4)
+    consumer = _layout(_transfer(list(range(8)), 1, draft=True))
+    with pytest.raises(RuntimeError, match="role mismatch|byte-size mismatch"):
+        producer._execute_block_transfer(
+            {
+                "consumer_base_addrs": [mem.add(4 * b, False) for _, _, b in consumer],
+                "consumer_region_roles": [r for r, _, _ in consumer],
+                "consumer_block_bpb": [b for _, _, b in consumer],
+                "consumer_tp_size": 4,
+                "consumer_tp_rank": 0,
+            },
+            "consumer",
+            [0],
+            [0],
+            "old-consumer",
+        )
+    assert mem.writes == 0
+
+
+def test_an_explicit_map_may_not_send_two_regions_to_one():
+    mc = pytest.importorskip(
+        "atom.kv_transfer.disaggregation.mooncake.mooncake_connector"
+    )
+    producer = object.__new__(mc.MooncakeConnector)
+    assert producer._consumer_region_map(3, 6, None, [0, 2, -1]) == [0, 2, 5]
+    with pytest.raises(ValueError, match="two regions to one"):
+        producer._consumer_region_map(3, 6, None, [0, 5, -1])
+    with pytest.raises(ValueError, match="exceeds"):
+        producer._consumer_region_map(2, 6, None, [0, -7])
+
+
+def test_a_head_cut_matches_names_up_to_the_head_count_only():
+    mc = pytest.importorskip(
+        "atom.kv_transfer.disaggregation.mooncake.mooncake_connector"
+    )
+    same = mc._same_unit_role
+    assert same("mha.h4d128.k.layer_3", "mha.h1d128.k.layer_3", True)
+    assert not same("mha.h4d128.k.layer_3", "mha.h1d128.k.layer_3", False)
+    assert not same("mha.h4d128.k.layer_3", "mha.h1d128.v.layer_3", True)
+    assert not same("mha.h4d128.k.layer_3", "mha.h1d128.k.layer_4", True)
+    assert not same("draft.k.layer_0", "draft.v.layer_0", True)

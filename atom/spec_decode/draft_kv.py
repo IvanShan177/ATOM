@@ -195,10 +195,16 @@ class DraftKvBuilder(PoolRowsMixin):
         # Every field is per head. A layer reading and writing its cache through
         # smaller SHUFFLE pages than the pool's (M3.1's DSpark draft: page-16)
         # stores each of them head-major.
-        pages = {
-            row: getattr(module, "shuffle_page_tokens", pool.block_size)
-            for module, row in (self._pool_rows or {}).get(DRAFT_KV_ROWS, {}).items()
-        }
+        rows = self.pool_rows[DRAFT_KV_ROWS]
+        page_tokens = [pool.block_size] * len(rows)
+        for module, row in rows.items():
+            page_tokens[row] = getattr(module, "shuffle_page_tokens", pool.block_size)
+        # Field-major over the rows (`MhaKvPool.region_tensors`).
+        regions = pool.region_tensors()
+        if len(regions) % len(page_tokens):
+            raise RuntimeError(
+                f"{len(regions)} draft regions are not fields x {len(page_tokens)} rows"
+            )
         return KVTransferTensors(
             # The draft's rows sit in the same block ids as the target's, so
             # its regions need a name that says which stack they are.
@@ -207,14 +213,11 @@ class DraftKvBuilder(PoolRowsMixin):
                     t,
                     semantic_role=f"draft.{role}",
                     head_major_runs=(
-                        pool.block_size
-                        // pages.get(
-                            int(role.rsplit(".layer_", 1)[1]), pool.block_size
-                        ),
+                        pool.block_size // page_tokens[i % len(page_tokens)],
                         pool.num_kv_heads,
                     ),
                 )
-                for role, t in pool.region_tensors()
+                for i, (role, t) in enumerate(regions)
             ],
             # A paged MHA/GQA draft is a per-rank shard. Appending it to an
             # otherwise replicated target must disable whole-object collapse.

@@ -436,6 +436,11 @@ class Drafter(abc.ABC):
             f"{type(self).__name__} aux capture on target layers: {spec.layer_ids}"
         )
 
+    @property
+    def captures_aux(self) -> bool:
+        """Did `arm_aux_capture` hook target layers for this drafter?"""
+        return self._captures_aux
+
     def _make_aux_hook(self, buf_idx: int, extract):
         return Drafter.aux_capture_hook(self._aux_buffers[buf_idx], extract)
 

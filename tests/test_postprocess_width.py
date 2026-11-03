@@ -181,3 +181,28 @@ def test_prefill_really_does_run_wider_than_it_scheduled():
     )
 
     assert (mode.scheduled_bs, mode.running_bs) == (3, 4)
+
+
+@pytest.mark.parametrize("producer", [False, True])
+@pytest.mark.parametrize("duplicates_propose", [False, True])
+def test_a_producer_skips_propose_only_when_nothing_rides_on_it(
+    producer, duplicates_propose
+):
+    """A producer's drafts are dropped. DSpark writes its context K/V apart
+    from propose, so a producer leaves propose out, PP or not, and on every DP
+    rank alike; EAGLE's first draft step writes the final chunk's K/V, so it
+    still runs."""
+    runner = object.__new__(mod.ModelRunner)
+    runner.drafter = types.SimpleNamespace(
+        draft_kv_duplicates_propose=duplicates_propose
+    )
+    runner.tokenID_processor = types.SimpleNamespace(
+        is_pd_producer=producer, is_pipeline_parallel=False
+    )
+    runner.config = types.SimpleNamespace(
+        parallel_config=types.SimpleNamespace(data_parallel_size=2)
+    )
+    skips = producer and not duplicates_propose
+    assert runner._producer_skips_propose() is skips
+    # No DP peer is owed the collectives of a propose nobody runs.
+    assert runner._dp_draft_lockstep_active() is not skips

@@ -1028,7 +1028,8 @@ def test_explicit_region_map_rejects_length_mismatch():
         conn._consumer_region_map(3, 2, explicit_indices=[0, 1])
 
 
-@pytest.mark.parametrize("indices", [[-1, 0], [0, 2]])
+# Negative indices count from the consumer's end, so -3 of 2 is before it.
+@pytest.mark.parametrize("indices", [[-3, 0], [0, 2]])
 def test_explicit_region_map_rejects_out_of_bounds_indices(indices):
     mc = pytest.importorskip(
         "atom.kv_transfer.disaggregation.mooncake.mooncake_connector"

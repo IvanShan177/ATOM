@@ -883,6 +883,9 @@ class MiniMaxM3SparseForCausalLM(nn.Module):
             for layer in local_layers
         }
         fields = pool.cache_fields + pool.scale_fields
+        # (field, local row, global row, consumer index, head runs). A global
+        # row is the one an unsplit model gives that unit: the layer for KV,
+        # its slot among the sparse layers for the index.
         layout = [
             (field.name, row, layer, i * num_layers + layer, head_runs[layer])
             for i, field in enumerate(fields)
@@ -890,11 +893,17 @@ class MiniMaxM3SparseForCausalLM(nn.Module):
         ]
         index_offset = len(fields) * num_layers
         layout.extend(
-            ("index", row, layer, index_offset + index_slots[layer], None)
+            (
+                "index",
+                row,
+                index_slots[layer],
+                index_offset + index_slots[layer],
+                None,
+            )
             for row, layer in enumerate(n for n in local_layers if n in index_slots)
         )
         pages = []
-        for page, (field, row, layer, _, runs) in zip(
+        for page, (field, row, global_row, _, runs) in zip(
             transfer_tensors.pages, layout, strict=True
         ):
             # The names below assume the backend's unit order; refuse another.
@@ -903,19 +912,20 @@ class MiniMaxM3SparseForCausalLM(nn.Module):
                     f"MiniMax-M3 transfer expected {field} row {row}, got "
                     f"{page.region.semantic_role!r}"
                 )
-            # Keep the backend's byte views and addresses; only annotate layout.
+            # Keep the backend's byte views and addresses and its name, with the
+            # global row: unchanged on an unsplit model, where the two agree.
             pages.append(
                 replace(
                     page,
                     region=replace(
-                        page.region, semantic_role=f"m3.layer_{layer}.{field}"
+                        page.region,
+                        semantic_role=f"mha.{geometry}.{field}.layer_{global_row}",
                     ),
                     head_major_runs=runs,
                 )
             )
         transfer_tensors.pages = pages
         transfer_tensors.block_region_consumer_indices = [e[3] for e in layout]
-        transfer_tensors.block_region_consumer_count = index_offset + len(index_slots)
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.get_input_embeddings(input_ids)

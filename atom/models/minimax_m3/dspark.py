@@ -35,9 +35,9 @@ page-16 table ``prepare_paged_block`` builds outside the graph; the block's own 
 are written into the cache first, except at positions past the request's
 allocated pages. No host sync and fixed shapes, so the block pass is CUDA-graph
 captured like the other drafts. The per-row decode takes one KV head per rank,
-so the draft needs TP >= its KV head count (4) to draft; a PP P/D producer
+so the draft needs TP >= its KV head count (4) to draft; a P/D producer
 never proposes and only writes context K/V, so it may hold several (all four
-on a TP1 stage).
+on a TP1 PP stage).
 
 Checkpoint layout (``<draft>/dspark``, MXFP8 [1, 32] linears, BF16 rest):
   language_model.model.dspark.fc.weight                       [6144, 5 * 6144]
@@ -80,6 +80,7 @@ from atom.models.dspark_draft import (
     linear_out,
 )
 from atom.models.minimax_m3.model import MiniMaxM3MLP
+from atom.models.utils import PPMissingLayer
 from atom.utils.forward_context import get_forward_context
 
 if TYPE_CHECKING:
@@ -216,12 +217,12 @@ class M3DSparkAttention(nn.Module):
                 f"DSpark draft has {self.total_num_heads} attention heads, which "
                 f"is not divisible by TP size {tp_size}."
             )
-        # Only a PP producer skips propose() (`ModelRunner.postprocess`).
-        pp_producer = (
-            kv_config_has_producer(getattr(atom_config, "kv_transfer_config", None))
-            and getattr(atom_config, "pipeline_parallel_size", 1) > 1
+        # A P/D producer never runs the block pass
+        # (`ModelRunner._producer_skips_propose`); it only writes context K/V.
+        producer = kv_config_has_producer(
+            getattr(atom_config, "kv_transfer_config", None)
         )
-        if self.total_num_kv_heads > tp_size and not pp_producer:
+        if self.total_num_kv_heads > tp_size and not producer:
             raise ValueError(
                 "The MiniMax-M3.1 DSpark draft decodes its block per row with one "
                 f"KV head per rank, so it needs TP >= {self.total_num_kv_heads} "
@@ -331,6 +332,13 @@ class M3DSparkAttention(nn.Module):
         page another request owns (under prefix caching, a shared prefix) --
         then decode per row.
         """
+        if self.num_kv_heads != 1:
+            # Before any K/V is written: only a P/D producer, which never
+            # drafts, is built with more than one KV head per rank.
+            raise RuntimeError(
+                f"The block pass decodes one KV head per rank; this rank holds "
+                f"{self.num_kv_heads} of {self.total_num_kv_heads}"
+            )
         qkv = linear_out(self.qkv_proj(hidden_states))
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         cache = self._bound_cache()
@@ -361,10 +369,6 @@ class M3DSparkAttention(nn.Module):
         layers run -- no host sync, fixed shapes, so the block can be captured.
         The context is read once per block position, one KV head per rank.
         """
-        if self.num_kv_heads != 1:
-            raise RuntimeError(
-                "Only a PP P/D producer runs below TP 4; it must not draft."
-            )
         k16, v16, ks16, vs16 = cache  # page-16 views, see _bound_cache
         rows = q.shape[0]
         q = q.view(rows, self.num_heads, self.head_dim)
@@ -528,7 +532,10 @@ class MiniMaxM3DSpark(DSparkDraftModel):
                 f"{target_vocab}. The draft shares the target's embedding and LM "
                 "head, so the two must agree."
             )
-        self.embed_tokens = target_base.model.embed_tokens
+        # On a later PP stage the embedding is a placeholder. That stage never
+        # drafts (PP speculates only as a P/D producer); None says so plainly.
+        embed = target_base.model.embed_tokens
+        self.embed_tokens = None if isinstance(embed, PPMissingLayer) else embed
         self.lm_head = target_base.lm_head
 
     # ---- drafting entry points (called by the proposer) --------------------

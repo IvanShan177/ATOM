@@ -855,6 +855,26 @@ class MooncakeConnectorScheduler(KVConnectorSchedulerBase):
 # ===================================================================
 
 
+def _same_unit_role(producer_role, consumer_role, cutting_heads: bool) -> bool:
+    """Do two regions hold the same unit?
+
+    The MHA backend names a unit by its per-rank geometry
+    (``mha.h{heads}d{dim}.{field}.layer_{row}``), and a head cut changes
+    exactly the head count; the rest of the name must still agree. The byte
+    checks of the cut catch a head-dim difference.
+    """
+    if producer_role == consumer_role:
+        return True
+    if not cutting_heads or producer_role is None or consumer_role is None:
+        return False
+    produced, consumed = producer_role.split(".", 2), consumer_role.split(".", 2)
+    return (
+        len(produced) == len(consumed) == 3
+        and produced[0] == consumed[0] == "mha"
+        and produced[2] == consumed[2]
+    )
+
+
 class MooncakeConnector(KVConnectorBase):
     """Worker-side KV cache connector using Mooncake push-mode RDMA.
 
@@ -2858,11 +2878,19 @@ class MooncakeConnector(KVConnectorBase):
                     "Explicit consumer region map length does not match local "
                     f"regions: {len(explicit_indices)} != {num_local_regions}"
                 )
-            if any(not 0 <= i < num_consumer_regions for i in explicit_indices):
+            # Negative indices count from the consumer's end (`merge_pages`).
+            resolved = [
+                i + num_consumer_regions if i < 0 else i for i in explicit_indices
+            ]
+            if any(not 0 <= i < num_consumer_regions for i in resolved):
                 raise ValueError(
                     "Explicit consumer region map exceeds consumer regions"
                 )
-            return explicit_indices
+            if len(set(resolved)) != len(resolved):
+                raise ValueError(
+                    "Explicit consumer region map sends two regions to one"
+                )
+            return resolved
         if (
             consumer_num_layers is not None
             and self.pp_size > 1
@@ -2904,19 +2932,29 @@ class MooncakeConnector(KVConnectorBase):
         if not any(self._block_head_major_runs):
             return None
         consumer_tp = int(request_data.get("consumer_tp_size", self.tp_size))
-        if consumer_tp == self.tp_size:
+        consumer_runs = request_data.get("consumer_head_major_runs")
+        # An older consumer does not describe its runs; the role and byte
+        # checks in the region loop then say what differs.
+        if consumer_tp == self.tp_size or consumer_runs is None:
             return None
         if self.tp_size != 1 or self.dcp_size != 1 or consumer_dcp_size != 1:
+            # Any per-head region needs a cut here, a draft's included: a
+            # consumer rank pulls from producer rank `rank % P`, which holds
+            # other heads than the ones that rank keeps.
+            per_head = [
+                role
+                for role, runs in zip(
+                    self._block_region_roles, self._block_head_major_runs
+                )
+                if runs is not None
+            ]
             raise RuntimeError(
                 "Cutting KV heads between TP sizes needs a TP1 producer and no "
                 f"DCP; got producer TP {self.tp_size} DCP {self.dcp_size}, "
-                f"consumer TP {consumer_tp} DCP {consumer_dcp_size}"
+                f"consumer TP {consumer_tp} DCP {consumer_dcp_size}, for "
+                f"{len(per_head)} per-head region(s) starting {per_head[:2]}"
             )
-        return (
-            request_data["consumer_head_major_runs"],
-            int(request_data["consumer_tp_rank"]),
-            consumer_tp,
-        )
+        return (consumer_runs, int(request_data["consumer_tp_rank"]), consumer_tp)
 
     def _execute_block_transfer(
         self,
@@ -3057,7 +3095,9 @@ class MooncakeConnector(KVConnectorBase):
             dst_base = consumer_base_addrs[cmap[region_idx]]
             bpb = self._per_block_bytes_list[region_idx]
             role = self._block_region_roles[region_idx]
-            if consumer_roles is not None and consumer_roles[cmap[region_idx]] != role:
+            if consumer_roles is not None and not _same_unit_role(
+                role, consumer_roles[cmap[region_idx]], head_cut is not None
+            ):
                 raise RuntimeError(
                     f"Region role mismatch for req {req_id}: local region "
                     f"{region_idx} is {role!r}, but consumer region "

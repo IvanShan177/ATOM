@@ -258,7 +258,10 @@ class KVTransferTensors:
     num_slots: int = 0
     # Optional producer-local -> consumer-global mapping for non-uniform block
     # region layouts. Uniform per-layer groups leave this unset and use the
-    # connector's existing group-major inference.
+    # connector's existing group-major inference. A negative index counts from
+    # the consumer's end: regions appended after the mapped ones (a draft's,
+    # `merge_pages`) are the consumer's last too, and only the handshake knows
+    # its total.
     block_region_consumer_indices: list[int] | None = None
     # Legacy field name: full per-request SLOT regions keyed by pool group.
     # `unit_bytes` includes compressor state and SWA, not just one ring.
@@ -307,10 +310,6 @@ class KVTransferTensors:
     # those are ordinary PAGE KV, never part of the state image. None means
     # every region. Appended for positional compatibility.
     paged_state_region_count: int | None = None
-    # Full consumer region count for this contributor, including other PP
-    # stages. Appended draft regions start here, not after this stage's pages.
-    # Required when merging a contributor with explicit consumer indices.
-    block_region_consumer_count: int | None = None
     # Scheduler blocks the PAGE regions are addressed in. `init=False` because
     # a backend cannot answer it: `req.block_ids` is the scheduler's id space,
     # and a backend counts in its own page -- a different unit even where it is
@@ -340,25 +339,16 @@ class KVTransferTensors:
         """
         if not other.pages:
             return
-        if (
-            self.block_region_consumer_indices is not None
-            or other.block_region_consumer_indices is not None
-        ):
-            indices, offset = [], 0
-            for contributor in (self, other):
-                local = contributor.block_region_consumer_indices
-                count = contributor.block_region_consumer_count
-                if local is None:
-                    local = range(len(contributor.pages))
-                    count = len(contributor.pages)
-                elif count is None:
-                    raise ValueError(
-                        "Merging mapped PAGE regions needs their full consumer count"
-                    )
-                indices.extend(offset + i for i in local)
-                offset += count
-            self.block_region_consumer_indices = indices
-            self.block_region_consumer_count = offset
+        if other.block_region_consumer_indices is not None:
+            raise ValueError("Only the first PAGE contributor may map its regions")
+        if self.block_region_consumer_indices is not None:
+            # Appended regions are the consumer's last, so they are numbered
+            # from its end; regions appended earlier move one block further in.
+            n = len(other.pages)
+            self.block_region_consumer_indices = [
+                *(i - n if i < 0 else i for i in self.block_region_consumer_indices),
+                *range(-n, 0),
+            ]
         self.pages.extend(other.pages)
         self.tp_replication_factor = math.gcd(
             self.tp_replication_factor, other.tp_replication_factor
