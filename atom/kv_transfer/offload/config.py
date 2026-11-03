@@ -329,10 +329,16 @@ def _draft_kv_window(config) -> int:
     `ATOM_DSPARK_DRAFT_KV_WINDOW` (`spec_decode/draft_kv.py`), 0 otherwise."""
     from atom.utils import envs
 
-    # `use_dspark()`, not `method`: a DSpark draft also arrives with the method
-    # left empty (auto-detected) or set to eagle3, and builds the same pool.
+    # Not `method`: a DSpark draft also arrives with the method left empty
+    # (auto-detected) or set to eagle3, and builds the same pool. Not
+    # `use_dspark()` either: a V4 draft inside its target owns no pool, so its
+    # window moves nothing. Only a separate draft builds one.
     spec = getattr(config, "speculative_config", None)
-    if not envs.ATOM_DSPARK_DRAFT_KV_WINDOW or spec is None or not spec.use_dspark():
+    if (
+        not envs.ATOM_DSPARK_DRAFT_KV_WINDOW
+        or spec is None
+        or not spec.use_dspark_with_draft()
+    ):
         return 0
     draft = spec.draft_model_hf_config
     return int(getattr(draft, "sliding_window", 0) or 0)

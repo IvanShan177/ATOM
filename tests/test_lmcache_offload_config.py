@@ -120,9 +120,10 @@ def test_page_namespace_changes_for_meaningful_geometry(mutate):
 
 
 class _Spec(SimpleNamespace):
-    """A speculative config that answers `use_dspark()` the way the real one does."""
+    """A speculative config that answers the DSpark queries as the real one does."""
 
     use_dspark = SpeculativeConfig.use_dspark
+    use_dspark_with_draft = SpeculativeConfig.use_dspark_with_draft
 
 
 def test_page_namespace_names_a_windowed_draft_and_only_that(monkeypatch):
@@ -133,7 +134,9 @@ def test_page_namespace_names_a_windowed_draft_and_only_that(monkeypatch):
     config.speculative_config = _Spec(
         method="dspark",
         num_speculative_tokens=7,
-        draft_model_hf_config=SimpleNamespace(sliding_window=4096),
+        draft_model_hf_config=SimpleNamespace(
+            sliding_window=4096, dspark_with_draft=True
+        ),
     )
     riding = offcfg.build_page_namespace(config, _lmcache_config(), 4)
     monkeypatch.setenv("ATOM_DSPARK_DRAFT_KV_WINDOW", "1")
@@ -148,6 +151,14 @@ def test_page_namespace_names_a_windowed_draft_and_only_that(monkeypatch):
         monkeypatch.delenv("ATOM_DSPARK_DRAFT_KV_WINDOW")
         assert offcfg.build_page_namespace(config, _lmcache_config(), 4) != on
         monkeypatch.setenv("ATOM_DSPARK_DRAFT_KV_WINDOW", "1")
+    # A V4 DSpark draft rides inside its target and owns no pool: its window
+    # moves nothing, so the switch names nothing either.
+    config.speculative_config.draft_model_hf_config.dspark_with_draft = False
+    inline = offcfg.build_page_namespace(config, _lmcache_config(), 4)
+    monkeypatch.delenv("ATOM_DSPARK_DRAFT_KV_WINDOW")
+    assert offcfg.build_page_namespace(config, _lmcache_config(), 4) == inline
+    monkeypatch.setenv("ATOM_DSPARK_DRAFT_KV_WINDOW", "1")
+    config.speculative_config.draft_model_hf_config.dspark_with_draft = True
     config.speculative_config.method = "dspark"
     config.speculative_config.draft_model_hf_config.sliding_window = 0
     no_window = offcfg.build_page_namespace(config, _lmcache_config(), 4)
