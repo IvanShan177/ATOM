@@ -1974,8 +1974,8 @@ write_metadata() {
 EOF
 }
 
-# Goes right after server_common, where the shared flag used to be, so a
-# --online_quant_config in a role's extra_args still wins.
+# Goes right after server_common, so a --online_quant_config in a role's
+# extra_args still wins.
 build_online_quant_args() {
   local config="$1"
   local -n out_args="$2"

@@ -1008,11 +1008,12 @@ models:
         #   CONC 32-88  PP8xTP1 prefill, TP8xDCP8 decode, four drafts
         #
         # The decode runs the recipe: the drafter's linears unquantized,
-        # max_num_seqs 2 * CONC (at least 32), ReplaySSM and a 128 GiB per-rank
-        # CPU tier from CONC 16, comm-group reuse from CONC 56. CONC 32 and 88
-        # are not in the recipe: each takes the settings of the recipe point
-        # below it, CONC 16 and 72, except max_num_seqs. From CONC 48 the
-        # prefill's state cache is the PD recipe's
+        # max_num_seqs 2 * CONC (at least 32), ReplaySSM from CONC 16,
+        # comm-group reuse from CONC 56. CONC 32 and 88 are not in the recipe:
+        # each takes the settings of the recipe point below it, CONC 16 and 72,
+        # except max_num_seqs. Only the prefill has a CPU tier: 128 GiB per rank
+        # at CONC 16 and 32. From CONC 48 the prefill's state cache is the PD
+        # recipe's
         # (recipes/mesh/Agentic-Kimi-K3.md): on-demand KDA checkpoints at
         # observed shared-prefix targets, and a 128 GiB state cap carved from a
         # 224 GiB per-rank pool, which leaves paged KV 96 GiB per rank once
@@ -1290,10 +1291,13 @@ models:
             prefill: *kimi_k3_pp8_state128_prefill_env
             decode: *kimi_k3_pd_decode_env
 
-        # From CONC 72 the decode's MLA runs on aiter's OPUS kernel, which the
-        # names and dashboard labels carry. Its error against fp32 is larger
-        # than the asm kernel's, but GSM8K held at CONC 72; lower concurrencies
-        # are unmeasured.
+        # From CONC 72 the decode asks aiter for its OPUS MLA kernel, which the
+        # names and dashboard labels carry. aiter falls back to the asm kernel
+        # without a log line when OPUS does not apply, so "opus" names what was
+        # requested. That it was taken shows only in the on/off A/B on the
+        # 202610241500 image (#2787: ITL p50 21.96 vs 19.92 ms at CONC 72). Its
+        # error against fp32 is larger than the asm kernel's, but GSM8K held at
+        # CONC 72; lower concurrencies are unmeasured.
         - &kimi_k3_1p1d_pp8_dcp8_c72
           <<: *kimi_k3_1p1d_pp8_dcp8_c56
           name: kimi-k3-mxfp4-1p1d-pp8-dcp8-dspark4-agentic-lmcache-1m-c72-opus

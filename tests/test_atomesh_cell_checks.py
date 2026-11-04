@@ -14,6 +14,14 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from torch import nn
+
+from atom.models.kimi_k3.mono import dispatch as k3_mono
+from atom.mono.runtime import route
+from atom.mono.runtime.consensus import MonoUnsupported
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / ".github/scripts/atomesh"
@@ -219,8 +227,9 @@ class AtomDirProbeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             package = Path(temp).resolve() / "atom"
             (package / "utils").mkdir(parents=True)
-            # -S: no site-packages, so no installed atom shadows this one.
-            self.assertEqual(self.probe(package.parent, "-S"), str(package))
+            # -S -E: neither site-packages nor PYTHONPATH, so no other atom
+            # shadows this one.
+            self.assertEqual(self.probe(package.parent, "-S", "-E"), str(package))
 
 
 MONO_UP = ["Kimi-K3 mono decode armed", "Kimi-K3 mono decode on"]
@@ -601,6 +610,57 @@ class SubmitLogLinesTest(unittest.TestCase):
                         result.stdout,
                     )
                     self.assertEqual(result.stdout.splitlines()[-1], "exit 1")
+
+
+class C1LogLinesAreK3MonoLogsTest(unittest.TestCase):
+    """Every expect_log and reject_log line of the C1 decode is one K3 mono
+    logs: a reworded log in ATOM must fail here, not leave a reject_log that
+    never matches while the cell publishes as mono."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.decode = next(
+            cell
+            for cell in kimi_k3_cells("nightly")
+            if cell["name"].endswith("-c1-mono")
+        )["service"]["decode"]
+
+    def setUp(self):
+        capture = mock.patch.object(
+            route.torch.cuda, "is_current_stream_capturing", return_value=False
+        )
+        capture.start()
+        self.addCleanup(capture.stop)
+
+    def logged(self, refusal=None, create=None):
+        """What installing K3 mono logs, then its first 8-row step."""
+        with (
+            mock.patch.object(k3_mono, "config_refusal", return_value=refusal),
+            self.assertLogs("atom", "INFO") as logs,
+        ):
+            model = k3_mono.install_mono_decode(
+                nn.Module(), SimpleNamespace(tensor_parallel_size=8), None
+            )
+            if create is not None:
+                model._mono._create = create
+                model._mono.ready(8)
+        return logs.output
+
+    def test_every_c1_line_is_one_k3_mono_logs(self):
+        def no_8_row_build():
+            return SimpleNamespace(prepare=lambda rows, *shape: rows != 8)
+
+        def no_kernels():
+            raise MonoUnsupported("mono kernels unavailable")
+
+        logged = [
+            *self.logged(refusal="TP 4"),
+            *self.logged(create=no_8_row_build),
+            *self.logged(create=no_kernels),
+        ]
+        for line in self.decode["expect_log"] + self.decode["reject_log"]:
+            with self.subTest(line=line):
+                self.assertTrue(any(line in record for record in logged), logged)
 
 
 if __name__ == "__main__":

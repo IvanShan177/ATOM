@@ -79,7 +79,7 @@ case "${CONC}" in
 esac
 
 MAX_NUM_SEQS=$((2 * CONC))
-ONLINE_QUANT_CONFIG='{"global_quant_config":"ptpc_fp8","exclude_layer":["lm_head","model.embed_tokens","*self_attn.[qkv]_conv1d*","*block_sparse_moe.experts*","*block_sparse_moe.routed_expert_*","*vision_tower*","*mm_projector*"]}'
+ONLINE_QUANT_CONFIG='{"global_quant_config":"ptpc_fp8","exclude_layer":["lm_head","model.embed_tokens","*self_attn.[qkv]_conv1d*","*block_sparse_moe.experts*","*block_sparse_moe.routed_expert_*","*vision_tower*","*mm_projector*","context_proj","layers"]}'
 COMMON_ARGS=(
   --model "${MODEL_PATH}"
   --served-model-name "${SERVED_MODEL_NAME}"
@@ -104,7 +104,9 @@ COMMON_ARGS=(
 ```
 
 The acceptance-length override is for performance benchmarking. Omit it for
-correctness evaluation; see [DSpark](../DSpark.md).
+correctness evaluation; see [DSpark](../DSpark.md). `"context_proj"` and
+`"layers"` are the DSpark draft's own unprefixed module names: they keep the
+draft, whose checkpoint has no FP8 QAT, in bf16 without touching the target.
 
 ## Prefill node
 
