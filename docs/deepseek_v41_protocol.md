@@ -117,6 +117,10 @@ completion and is rejected with `suffix`. `logprobs` is rejected on
 `stream_options` requires `stream`; `include_usage` puts `usage` on every
 chunk, null until the final usage chunk.
 
+`stop` takes one string or a list of them on every endpoint. Stop strings
+are found in the decoded text, so one the model spells with other tokens
+than its own still ends the reply, and the returned text ends before it.
+
 ## Validation
 
 - The Rust mesh tool-parser regression and the Python streaming/complete parser

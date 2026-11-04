@@ -29,6 +29,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any
 
 import uvicorn
@@ -168,9 +169,11 @@ from .serving_responses import (
 )
 from .serving_responses import stream_failure_frames as responses_stream_failure_frames
 from .sse import event_frame, iter_sse_data
+from .stop_strings import StopStrings, cut_at_stop, stop_list
 from .streaming_dispatch import (
     SYNTHETIC_TOKEN_TEXT,
     FrameWait,
+    IncrementalStreamDetokenizer,
     StreamBatchDispatcher,
     StreamOutputCollector,
     enable_delta_reuse,
@@ -259,6 +262,38 @@ def delivered_text(token_ids) -> str:
     if synthetic_token_text is None:
         return decoded
     return synthetic_token_text * len(token_ids)
+
+
+def _abort_at_stop_string(seq_id: int) -> None:
+    """Stop a sequence whose text reached a stop string its tokens did not."""
+    with contextlib.suppress(Exception):
+        engine.core_mgr.abort_request(seq_id)
+
+
+def _stop_watch(sampling_params: SamplingParams) -> IncrementalStreamDetokenizer | None:
+    """Decoding state that finds the request's stop strings in its text."""
+    stops = stop_list(sampling_params.stop_strings)
+    if not stops or synthetic_token_text is not None:
+        return None
+    return IncrementalStreamDetokenizer(tokenizer, stop=StopStrings(stops))
+
+
+def _reached_stop(watch, item: dict, seq_id: int) -> bool:
+    """Whether this step's text reached a stop string, stopping the engine if so."""
+    if watch is None:
+        return False
+    watch.update(item.get("token_ids") or [], bool(item.get("finished")))
+    if not watch.stop.stopped:
+        return False
+    if not item.get("finished"):
+        _abort_at_stop_string(seq_id)
+    return True
+
+
+def _stopped_text(token_ids, watch) -> str:
+    """The delivered text, ending before its first stop string."""
+    text = delivered_text(token_ids)
+    return text if watch is None else cut_at_stop(text, watch.stop.stops)[0]
 
 
 def reasoning_channel(
@@ -973,6 +1008,7 @@ async def generate_async(
     all_token_ids = new_token_ids()
     finish_reason: str | None = None
     seq = None
+    watch = _stop_watch(sampling_params)
     kv_transfer_output_meta_info = None
     num_cached_tokens_seen = 0
 
@@ -1025,6 +1061,10 @@ async def generate_async(
                     record_nonstream_first_token()
                 last_token_at = item.get("ts", time.time())
                 all_token_ids.extend(token_ids)
+            if _reached_stop(watch, item, seq.id):
+                finish_reason = "stop_sequence"
+                _finished_ok = True
+                break
             if item.get("finished", False):
                 finish_reason = item.get("finish_reason")
                 _finished_ok = True
@@ -1044,7 +1084,7 @@ async def generate_async(
                     engine.core_mgr.abort_request(seq.id)
             engine.io_processor.requests.pop(seq.id, None)
 
-    text = delivered_text(all_token_ids)
+    text = _stopped_text(all_token_ids, watch)
     num_tokens_input = (
         seq.num_prompt_tokens
         if seq is not None
@@ -1105,6 +1145,7 @@ async def generate_async_multimodal(
     all_token_ids = new_token_ids()
     finish_reason: str | None = None
     seq = None
+    watch = _stop_watch(sampling_params)
 
     def completion_callback(request_output: RequestOutput):
         now = time.time()
@@ -1148,6 +1189,10 @@ async def generate_async_multimodal(
                     record_nonstream_first_token()
                 last_token_at = item.get("ts", time.time())
                 all_token_ids.extend(token_ids_out)
+            if _reached_stop(watch, item, seq.id):
+                finish_reason = "stop_sequence"
+                _finished_ok = True
+                break
             if item.get("finished", False):
                 finish_reason = item.get("finish_reason")
                 _finished_ok = True
@@ -1160,7 +1205,7 @@ async def generate_async_multimodal(
                     engine.core_mgr.abort_request(seq.id)
             engine.io_processor.requests.pop(seq.id, None)
 
-    text = delivered_text(all_token_ids)
+    text = _stopped_text(all_token_ids, watch)
     num_tokens_output = len(all_token_ids)
     finished_at = time.time()
     ttft = (first_token_at - started_at) if first_token_at is not None else 0.0
@@ -1221,6 +1266,7 @@ async def generate_async_fanout(
     per_last_token_at: list[float | None] = [None] * n
     per_finish_reason: list[str | None] = [None] * n
     finished = [False] * n
+    watches = [_stop_watch(sampling_params) for _ in range(n)]
 
     def make_callback(idx: int):
         def _cb(request_output: RequestOutput) -> None:
@@ -1279,7 +1325,10 @@ async def generate_async_fanout(
                     record_nonstream_first_token()
                 per_last_token_at[idx] = item.get("ts", time.time())
                 per_tokens[idx].extend(tokens)
-            if item.get("finished", False):
+            if _reached_stop(watches[idx], item, seqs[idx].id):
+                per_finish_reason[idx] = "stop_sequence"
+                finished[idx] = True
+            elif item.get("finished", False):
                 per_finish_reason[idx] = item.get("finish_reason")
                 finished[idx] = True
         _all_finished = True
@@ -1311,7 +1360,7 @@ async def generate_async_fanout(
         )
         outputs.append(
             {
-                "text": delivered_text(per_tokens[i]),
+                "text": _stopped_text(per_tokens[i], watches[i]),
                 "token_ids": per_tokens[i],
                 "finish_reason": per_finish_reason[i],
                 "num_tokens_input": num_tokens_input,
@@ -1433,7 +1482,7 @@ async def setup_streaming_request(
     # The detokenizer lives in this closure, so it is freed when the engine
     # drops the callback on the stream's last chunk -- no registry, no cleanup.
     assert _stream_batch_dispatcher is not None
-    detokenizer = _stream_batch_dispatcher.new_state()
+    detokenizer = _stream_batch_dispatcher.new_state(sampling_params.stop_strings)
 
     def stream_callback(request_output: RequestOutput) -> None:
         _send_stream_chunk_direct(
@@ -1468,6 +1517,7 @@ async def setup_streaming_request(
             engine.io_processor.requests.pop(seq.id, None)
         raise
     seq_id = seq.id
+    detokenizer.detokenizer.on_stop = partial(_abort_at_stop_string, seq_id)
 
     # debug, not info: this runs once per request, on the event loop, and
     # logging takes a lock the engine's output threads are also contending for.
@@ -1641,10 +1691,12 @@ async def setup_streaming_request_fanout(
     _request_start_times[request_id] = time.time()
 
     assert _stream_batch_dispatcher is not None
+    states = []
 
     def make_callback(idx: int):
         # One detokenizer per sibling, held by the closure that feeds it.
-        detokenizer = _stream_batch_dispatcher.new_state()
+        detokenizer = _stream_batch_dispatcher.new_state(sampling_params.stop_strings)
+        states.append(detokenizer)
 
         def _cb(request_output: RequestOutput) -> None:
             _send_stream_chunk_tagged(
@@ -1690,6 +1742,8 @@ async def setup_streaming_request_fanout(
             _seq_id_to_request_id.pop(seq.id, None)
             engine.io_processor.requests.pop(seq.id, None)
         raise
+    for state, seq in zip(states, seqs):
+        state.detokenizer.on_stop = partial(_abort_at_stop_string, seq.id)
     seq_ids = [seq.id for seq in seqs]
     # debug for the same reason as its single-sequence counterpart: per-request
     # logging on the event loop stalls it under load.

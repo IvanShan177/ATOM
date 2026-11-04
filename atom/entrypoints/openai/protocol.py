@@ -249,7 +249,7 @@ class ChatCompletionRequest(BaseModel):
     top_p: float | None = DEFAULT_TOP_P
     max_tokens: int | None = DEFAULT_MAX_TOKENS
     max_completion_tokens: int | None = None
-    stop: list[str] | None = None
+    stop: str | list[str] | None = None
     ignore_eos: bool | None = False
     stream: bool | None = False
     stream_options: dict[str, Any] | None = None
@@ -322,7 +322,7 @@ class CompletionRequest(BaseModel):
     top_p: float | None = DEFAULT_TOP_P
     max_tokens: int | None = DEFAULT_MAX_TOKENS
     max_completion_tokens: int | None = None
-    stop: list[str] | None = None
+    stop: str | list[str] | None = None
     ignore_eos: bool | None = False
     stream: bool | None = False
     # Only with `stream`: `include_usage` puts `usage` on every chunk.
