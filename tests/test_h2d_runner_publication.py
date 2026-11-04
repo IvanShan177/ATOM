@@ -18,7 +18,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def runner_with_buffers(monkeypatch, transport, pp_size=1, speculative=False):
+def runner_with_buffers(
+    monkeypatch, transport, pp_size=1, speculative=False, mixed=False
+):
     from atom.model_engine.model_runner import ModelRunner, tokenIDProcessor
     from atom.model_ops.attentions.qwen4_exp_attn import Qwen4ExpMetadataBuilder
 
@@ -59,7 +61,16 @@ def runner_with_buffers(monkeypatch, transport, pp_size=1, speculative=False):
     runner.forward_vars["cu_seqlens_q"] = CpuGpuBuffer(
         9, dtype=torch.int32, device=runner.device, publication_group="early"
     )
-    builder = Qwen4ExpMetadataBuilder.__new__(Qwen4ExpMetadataBuilder)
+    if mixed:
+        from atom.model_ops.attentions.deepseek_v4_attn import (
+            DeepseekV4AttentionMetadataBuilder,
+        )
+
+        builder = DeepseekV4AttentionMetadataBuilder.__new__(
+            DeepseekV4AttentionMetadataBuilder
+        )
+    else:
+        builder = Qwen4ExpMetadataBuilder.__new__(Qwen4ExpMetadataBuilder)
     builder.model_runner = runner
     runner.attn_metadata_builder = builder
     runner._init_forward_vars_ring()
@@ -73,7 +84,7 @@ def test_mixed_query_spans_reach_independent_device_banks(
     monkeypatch, transport, pp_size
 ):
     """Check the device consumers, including ring reuse and ragged decode rows."""
-    runner = runner_with_buffers(monkeypatch, transport, pp_size)
+    runner = runner_with_buffers(monkeypatch, transport, pp_size, mixed=True)
     builder = runner.attn_metadata_builder
     builder.build_mixed_prefill_banks()
     observed = []
