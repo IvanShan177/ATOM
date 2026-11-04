@@ -18,6 +18,7 @@ thread reads off `self`, both managers must provide.
 """
 
 import ast
+import asyncio
 import pathlib
 import pickle
 import unittest
@@ -111,25 +112,30 @@ class OutputThreadStateTest(unittest.TestCase):
             mgr._closed = True
             self.assertFalse(mgr.is_healthy())
 
-    def test_shutdown_frame_marks_unhealthy_before_cleanup(self):
-        mgr = self.managers[0]
-        mgr.engine_core_processes = [SimpleNamespace(is_alive=lambda: True)]
-        url = f"inproc://failure-{uuid.uuid4().hex}"
+    def _drive_output_thread(self, mgr, *frames):
+        """Run a real output thread over `frames`, then end it with SHUTDOWN."""
+        url = f"inproc://outputs-{uuid.uuid4().hex}"
         receiver = mgr.ctx.socket(zmq.PULL)
         receiver.bind(url)
         sender = mgr.ctx.socket(zmq.PUSH)
         sender.connect(url)
-        observed = []
-        mgr._shutdown_engine_core_rank = lambda rank: observed.append(mgr.is_healthy())
         thread = mgr._create_output_thread(0, receiver, url + "-shutdown")
         thread.start()
         try:
-            sender.send(pickle.dumps((EngineCoreRequestType.SHUTDOWN, None)))
+            for frame in (*frames, (EngineCoreRequestType.SHUTDOWN, None)):
+                sender.send(pickle.dumps(frame))
             thread.join(timeout=3)
             self.assertFalse(thread.is_alive())
-            self.assertEqual(observed, [False])
         finally:
             sender.close(linger=0)
+
+    def test_shutdown_frame_marks_unhealthy_before_cleanup(self):
+        mgr = self.managers[0]
+        mgr.engine_core_processes = [SimpleNamespace(is_alive=lambda: True)]
+        observed = []
+        mgr._shutdown_engine_core_rank = lambda rank: observed.append(mgr.is_healthy())
+        self._drive_output_thread(mgr)
+        self.assertEqual(observed, [False])
 
     def _terminate(self):
         for mgr in self.managers:
@@ -178,9 +184,7 @@ class OutputThreadStateTest(unittest.TestCase):
         """
         root = SOURCE.parents[1]
         hosts = sorted(
-            p
-            for p in root.rglob("*.py")
-            if ".create_engine(" in p.read_text() and "examples/" not in p.as_posix()
+            p for p in root.rglob("*.py") if ".create_engine(" in p.read_text()
         )
         self.assertTrue(hosts, "no engine host found; this test has stopped checking")
         missing = [
@@ -188,7 +192,7 @@ class OutputThreadStateTest(unittest.TestCase):
             for p in hosts
             if not any(
                 s in p.read_text()
-                for s in (".get_output(", ".step()", "get_output_async")
+                for s in (".get_output(", ".step()", "get_output_async", ".generate")
             )
             and "keep_finished_outputs=False" not in p.read_text()
         ]
@@ -199,20 +203,30 @@ class OutputThreadStateTest(unittest.TestCase):
             "create_engine(..., keep_finished_outputs=False)",
         )
 
+    def _queued_after_one_finished_batch(self, keep):
+        mgr = _bare_manager(CoreManager, keep_finished_outputs=keep)
+        self.addCleanup(mgr.ctx.term)
+        delivered = []
+        mgr._deliver_terminal_output = lambda seq: bool(delivered.append(seq.id))
+        mgr._shutdown_engine_core_rank = lambda rank: None
+        self._drive_output_thread(
+            mgr, (EngineCoreRequestType.ADD, [SimpleNamespace(id=7)])
+        )
+        # a callback host is still owed the terminal output of a rejected seq
+        self.assertEqual(delivered, [7])
+        return mgr.outputs_queue.qsize()
+
     def test_finished_outputs_are_queued_only_when_kept(self):
-        for node in ast.walk(TREE):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "put_nowait"
-                and ast.unparse(node.func.value) == "self.outputs_queue"
-            ):
-                guards = [
-                    ast.unparse(n.test)
-                    for n in ast.walk(TREE)
-                    if isinstance(n, ast.If) and node in ast.walk(n)
-                ]
-                self.assertIn("self.keep_finished_outputs", guards)
+        self.assertEqual(self._queued_after_one_finished_batch(keep=True), 1)
+        self.assertEqual(self._queued_after_one_finished_batch(keep=False), 0)
+
+    def test_reading_outputs_that_are_not_kept_fails_instead_of_hanging(self):
+        mgr = _bare_manager(CoreManager, keep_finished_outputs=False)
+        self.addCleanup(mgr.ctx.term)
+        with self.assertRaisesRegex(RuntimeError, "keep_finished_outputs"):
+            mgr.get_output()
+        with self.assertRaisesRegex(RuntimeError, "keep_finished_outputs"):
+            asyncio.run(mgr.get_output_async())
 
     def test_load_accounting_is_sized_for_the_engine_count(self):
         mgr = _bare_manager(CoreManager, local_engine_count=4)

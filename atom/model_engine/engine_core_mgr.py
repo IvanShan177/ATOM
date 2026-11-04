@@ -891,7 +891,16 @@ class CoreManager:
                 break
             await self.async_output_queue.put(seqs)
 
+    def _require_kept_outputs(self) -> None:
+        # Nothing is ever queued then: a read would block forever.
+        if not self.keep_finished_outputs:
+            raise RuntimeError(
+                f"{self.label}: built with keep_finished_outputs=False, so "
+                "finished outputs are delivered only through callbacks"
+            )
+
     async def get_output_async(self) -> list[Sequence]:
+        self._require_kept_outputs()
         if not self.async_output_queue:
             raise RuntimeError("Engine async mode not enabled")
 
@@ -2125,6 +2134,7 @@ class CoreManager:
                 )
 
     def get_output(self) -> list[Sequence]:
+        self._require_kept_outputs()
         seqs = self.outputs_queue.get()
         if isinstance(seqs, BaseException):
             raise seqs
