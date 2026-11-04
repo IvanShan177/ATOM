@@ -2120,7 +2120,8 @@ class Config:
     master_addr: str = "127.0.0.1"
     enable_dp_attention: bool = False
     # DP request-routing strategy used by CoreManager to pick an engine rank:
-    # "round_robin" | "least_requests" (default) | "least_tokens". Only has an
+    # "round_robin" | "least_requests" (default) | "least_tokens" |
+    # "prefix_spread". Only has an
     # effect when more than one DP engine rank is launched. See
     # atom/model_engine/engine_core_mgr.py:_select_dp_rank_locked. The literal
     # default must stay in sync with engine_core_mgr.DP_LB_DEFAULT (config.py
@@ -2128,8 +2129,8 @@ class Config:
     dp_load_balance: str = "least_requests"
     # Offload prefetch (`atom/model_engine/offload_prefetch.py`): start a
     # waiting request's tier load before its turn. None: on with prefix-spread
-    # DP routing (ATOM_DP_PREFIX_SPREAD), which moves requests onto ranks that
-    # must load their prefix from the tier.
+    # DP routing (`--dp-load-balance prefix_spread`), which moves requests onto
+    # ranks that must load their prefix from the tier.
     offload_prefetch: bool | None = None
     # MoE expert-parallel layout policy. When True, MoE EP computes ranks in the
     # flattened DP x TP device space (and shared-expert fusion is disabled,
@@ -2301,7 +2302,7 @@ class Config:
 
     def __post_init__(self):
         if self.offload_prefetch is None:
-            self.offload_prefetch = envs.ATOM_DP_PREFIX_SPREAD
+            self.offload_prefetch = self.dp_load_balance == "prefix_spread"
         self.moe_all2all_backend = (
             str(self.moe_all2all_backend or "auto").strip().lower()
         )
