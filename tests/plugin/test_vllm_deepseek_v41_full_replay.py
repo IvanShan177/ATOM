@@ -155,8 +155,10 @@ def _projections(ratio, phase, tokens=_CAPACITY):
 
 
 def _reset_cache(cache, *, page_byte=0x5A, state_value=0.0):
-    cache.backing.zero_()
-    cache.page_bytes.fill_(page_byte)
+    for allocation in cache.allocations:
+        allocation.zero_()
+    for _, region in cache.page_regions:
+        region.fill_(page_byte)
     for state in cache.compress_state(0):
         state.fill_(state_value)
 
@@ -205,7 +207,15 @@ def _assert_plan(step, ratio, boundaries, writes):
 
 
 def _main_rows(cache):
+    if cache.window_fp8:
+        return torch.cat(cache.main_view(0), dim=-1).view(
+            cache.num_pages, -1, cache.geometry.main_row_bytes
+        )
     return cache.pages.view("main_0")[0]
+
+
+def _page_bytes(cache):
+    return torch.cat([view for _, view in cache.page_regions], dim=1)
 
 
 def _assert_only_rows_changed(cache, before, pages, row):
@@ -221,7 +231,9 @@ def _assert_only_rows_changed(cache, before, pages, row):
 
 
 def _assert_matches_eager(actual, expected):
-    torch.testing.assert_close(actual.page_bytes, expected.page_bytes, rtol=0, atol=0)
+    torch.testing.assert_close(
+        _page_bytes(actual), _page_bytes(expected), rtol=0, atol=0
+    )
     for observed, reference in zip(
         actual.compress_state(0), expected.compress_state(0)
     ):
@@ -242,13 +254,13 @@ def test_ratio2_zero_boundary_capture_replays_a_real_compressed_page(packed):
         _assert_plan(captured_step, 2, boundaries=0, writes=_CAPACITY)
         captured_storage = _storage(captured_step, 2)
         before = _main_rows(builder.cache).clone()
-        before_pages = builder.cache.page_bytes.clone()
+        before_pages = _page_bytes(builder.cache).clone()
         # Capture itself is not execution. This first replay really writes the
         # position-0 ring, while the compression grid has only sentinels.
         graph.replay()
         stream.synchronize()
         torch.testing.assert_close(
-            builder.cache.page_bytes, before_pages, rtol=0, atol=0
+            _page_bytes(builder.cache), before_pages, rtol=0, atol=0
         )
         for state, projected in zip(builder.cache.compress_state(0), (values, scores)):
             torch.testing.assert_close(
@@ -331,7 +343,7 @@ def test_ratio1_shrunk_replay_sentinels_stop_page_and_state_tail_writes(packed):
 
 
 def _cache_storage(cache):
-    tensors = [cache.backing, cache.cursor, cache.tentative_staging.gpu]
+    tensors = [*cache.allocations, cache.cursor, cache.tentative_staging.gpu]
     tensors.extend(tensor for pair in cache.indptr_buffers.values() for tensor in pair)
     return tuple((t.data_ptr(), tuple(t.shape), t.stride()) for t in tensors)
 
@@ -340,7 +352,7 @@ def _assert_decode_indptrs(observed, geometry, starts, width, padded_tokens, rat
     # Independent counting oracle from test_cache's shared-indptr regression.
     positions = [start + j for start in starts for j in range(width)]
     windows = [max(0, p + 1 - max(p - geometry.window_size + 1, 0)) for p in positions]
-    split = not geometry.packed
+    split = True
     counts = [
         (0 if split else window) + min((p + 1) // ratio, geometry.index_topk)
         for window, p in zip(windows, positions)

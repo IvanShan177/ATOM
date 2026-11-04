@@ -130,6 +130,7 @@ def _rope_window_kernel(
     query_values,
     query_scales,
     pool,
+    pool_scale,
     batches,
     cu,
     slots,
@@ -148,6 +149,7 @@ def _rope_window_kernel(
     EMIT_QUERY_FP8: tl.constexpr,
     WRITE_RING: tl.constexpr,
     PACKED_RING: tl.constexpr,
+    PLANAR_RING: tl.constexpr,
     HEAD_BLOCK: tl.constexpr,
 ):
     """One program per (token, slot); the last slot of a token is its KV.
@@ -219,7 +221,15 @@ def _rope_window_kernel(
                     )
                     * ROW_UNITS
                 )
-                if PACKED_RING:
+                if PLANAR_RING:
+                    tl.store(
+                        pool + base * D + dim,
+                        tl.reshape(quantized, (D,)).to(tl.uint8, bitcast=True),
+                    )
+                    tl.store(
+                        pool_scale + base * (D // 32) + tl.arange(0, D // 32), code
+                    )
+                elif PACKED_RING:
                     tl.store(
                         pool + base + dim,
                         tl.reshape(quantized, (D,)).to(tl.uint8, bitcast=True),
@@ -262,6 +272,8 @@ def rope_quant_window(
     tokens, heads, dim = query.shape
     kv_half = ring is not None or qat is not None or values is not None
     pool, step, window = ring or (None, None, None)
+    planar_ring = isinstance(pool, tuple)
+    pool, pool_scale = pool if planar_ring else (pool, None)
     byte_ring = pool is not None and pool.dtype == torch.uint8
     query_values, query_scales = query_fp8 or (None, None)
     # The tile's shape must be powers of two; anything else, a query-less KV
@@ -290,6 +302,7 @@ def rope_quant_window(
         query_values,
         None if query_scales is None else query_scales.view(torch.uint8),
         pool,
+        pool_scale,
         None if step is None else step.batch_ids,
         None if step is None else step.cu_seqlens_q,
         None if step is None else step.slots,
@@ -304,6 +317,7 @@ def rope_quant_window(
         RUN_ROWS=0 if window is None else window.run_rows,
         ROW_UNITS=1 if pool is None or byte_ring else dim,
         PACKED_RING=byte_ring,
+        PLANAR_RING=planar_ring,
         EMIT_QAT=qat is not None,
         EMIT_PACKED=values is not None,
         EMIT_QUERY_FP8=query_fp8 is not None,
