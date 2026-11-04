@@ -4,6 +4,7 @@
 from functools import lru_cache
 
 import torch
+from aiter import QuantType, dtypes
 from aiter.jit.utils.chip_info import get_cu_num, get_gfx_runtime
 from aiter.jit.utils.torch_guard import torch_compile_guard
 
@@ -11,10 +12,28 @@ from atom.config import get_current_atom_config
 from atom.model_ops.fused_moe.expert_layout import SharedExpertMode
 from atom.model_ops.triton_topk_softmax import triton_topk_softmax
 from atom.model_ops.utils import _has_module
-from atom.quant_spec import fuses_mxfp8_shared_into_mxfp4
+from atom.quant_spec import NVFP4_DTYPE, fuses_mxfp8_shared_into_mxfp4
 from atom.utils import envs
 from atom.utils.custom_register import direct_register_custom_op
 from atom.utils.forward_context import get_forward_context
+
+
+def _routed_quant_supports_all2all_fusion(
+    quant_config, routed_expert_prefix: str | None
+) -> bool:
+    # FusedMoE implements the all-to-all shared-expert layouts only for the
+    # MXFP4 and NVFP4 MoE methods and raises for any other routed quant.
+    if quant_config is None:
+        return False
+    routed_spec = (
+        quant_config.get_layer_quant_config(routed_expert_prefix, check_children=True)
+        if routed_expert_prefix is not None
+        else quant_config.global_quant_config
+    )
+    return routed_spec.quant_type != QuantType.No and routed_spec.quant_dtype in (
+        dtypes.fp4x2,
+        NVFP4_DTYPE,
+    )
 
 
 def is_rocm_aiter_fusion_shared_expert_enabled_for_quant_config(
@@ -46,6 +65,19 @@ def is_rocm_aiter_fusion_shared_expert_enabled_for_quant_config(
         and mori_selected
         and config.enable_dp_attention
         and not (getattr(config, "eplb_enable", False) or envs.ATOM_FUSE_SHARED_EXPERT)
+    ):
+        return False
+    # Mirrors FusedMoEParallelConfig.selected_all2all_backend: simulated DP
+    # (dp_logical_size wider than the real DP group) stays off all-to-all.
+    dp_logical = getattr(config, "dp_logical_size", 0) or dp_size
+    uses_all2all = (
+        dp_size > 1
+        and config.enable_expert_parallel
+        and (mori_selected or requested_all2all == "rccl")
+        and (dp_logical == dp_size or not config.enable_dp_attention)
+    )
+    if uses_all2all and not _routed_quant_supports_all2all_fusion(
+        quant_config, routed_expert_prefix
     ):
         return False
 

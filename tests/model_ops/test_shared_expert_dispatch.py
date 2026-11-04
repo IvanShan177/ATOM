@@ -6,6 +6,8 @@ from conftest import atom_config_double
 
 pytest.importorskip("aiter", reason="full dispatch tests require aiter")
 
+from aiter import QuantType, dtypes
+
 import atom.model_ops.eplb as eplb_module
 import atom.model_ops.moe as moe_module
 import atom.model_ops.topK as topK_module
@@ -15,6 +17,7 @@ from atom.model_ops.moe import FusedMoE, FusedMoEParallelConfig, Mxfp4MoEMethod
 from atom.model_ops.topK import (
     is_rocm_aiter_fusion_shared_expert_enabled_for_quant_config,
 )
+from atom.quant_spec import LayerQuantConfig
 
 
 class _FakeMoELayer(SimpleNamespace):
@@ -206,7 +209,9 @@ def test_ep_alone_does_not_imply_all2all(
     assert config.use_all2all_kernels is (expected_backend is not None)
 
 
-def _atom_config(*, eplb: bool, backend: str = "auto") -> SimpleNamespace:
+def _atom_config(
+    *, eplb: bool, backend: str = "auto", expert_parallel: bool = False
+) -> SimpleNamespace:
     """The four fields this gate reads, over the real Config's defaults.
 
     Hand-built, this went red the day `is_rocm_aiter_fusion_shared_expert_
@@ -226,6 +231,7 @@ def _atom_config(*, eplb: bool, backend: str = "auto") -> SimpleNamespace:
         # Left at Config's default of False, the early return is unreachable
         # and the (no eplb, no switch) row stops meaning anything.
         enable_dp_attention=True,
+        enable_expert_parallel=expert_parallel,
     )
 
 
@@ -251,6 +257,49 @@ def test_eplb_overrides_the_local_replica_switch(monkeypatch, eplb, switch, expe
     )
 
     enabled = is_rocm_aiter_fusion_shared_expert_enabled_for_quant_config(None)
+
+    assert enabled is expected
+
+
+@pytest.mark.parametrize("backend", ["auto", "rccl"])
+@pytest.mark.parametrize(
+    "routed_dtype, expected",
+    [
+        ("fp4x2", True),
+        ("fp8", False),
+    ],
+)
+def test_all2all_fusion_requires_fp4_routed_experts(
+    monkeypatch, backend, routed_dtype, expected
+):
+    # FusedMoE raises for an all-to-all fused shared expert outside the
+    # MXFP4/NVFP4 MoE methods, so the gate must keep e.g. FP8 standalone.
+    monkeypatch.setattr(topK_module.envs, "ATOM_FUSE_SHARED_EXPERT", True)
+    monkeypatch.setattr(topK_module.envs, "ATOM_DISABLE_MORI_EP", False)
+    monkeypatch.setattr(topK_module, "_has_module", lambda name: True)
+    spec = LayerQuantConfig(
+        quant_type=(
+            QuantType.per_1x32 if routed_dtype == "fp4x2" else QuantType.per_1x128
+        ),
+        quant_dtype=getattr(dtypes, routed_dtype),
+    )
+    quant_config = SimpleNamespace(
+        exclude_layers=[],
+        quant_dtype=spec.quant_dtype,
+        global_quant_config=spec,
+        get_layer_quant_config=lambda prefix, check_children=False: spec,
+    )
+    monkeypatch.setattr(
+        topK_module,
+        "get_current_atom_config",
+        lambda: _atom_config(eplb=False, backend=backend, expert_parallel=True),
+    )
+
+    enabled = is_rocm_aiter_fusion_shared_expert_enabled_for_quant_config(
+        quant_config,
+        shared_expert_prefix="model.layers.3.mlp.shared_experts",
+        routed_expert_prefix="model.layers.3.mlp.experts",
+    )
 
     assert enabled is expected
 
