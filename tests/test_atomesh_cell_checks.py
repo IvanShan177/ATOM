@@ -619,11 +619,14 @@ class C1LogLinesAreK3MonoLogsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.decode = next(
+        cell = next(
             cell
             for cell in kimi_k3_cells("nightly")
             if cell["name"].endswith("-c1-mono")
-        )["service"]["decode"]
+        )
+        cls.decode = cell["service"]["decode"]
+        # The width C1 serves: one request plus its drafts.
+        cls.rows = 1 + int(cell["server_args"]["num_speculative_tokens"])
 
     def setUp(self):
         capture = mock.patch.object(
@@ -633,29 +636,31 @@ class C1LogLinesAreK3MonoLogsTest(unittest.TestCase):
         self.addCleanup(capture.stop)
 
     def logged(self, refusal=None, create=None):
-        """What installing K3 mono logs, then its first 8-row step."""
+        """What installing K3 mono logs, then its first step at C1's width."""
         with (
             mock.patch.object(k3_mono, "config_refusal", return_value=refusal),
             self.assertLogs("atom", "INFO") as logs,
         ):
             model = k3_mono.install_mono_decode(
-                nn.Module(), SimpleNamespace(tensor_parallel_size=8), None
+                nn.Module(),
+                SimpleNamespace(tensor_parallel_size=self.decode["tp"]),
+                None,
             )
             if create is not None:
                 model._mono._create = create
-                model._mono.ready(8)
+                model._mono.ready(self.rows)
         return logs.output
 
     def test_every_c1_line_is_one_k3_mono_logs(self):
-        def no_8_row_build():
-            return SimpleNamespace(prepare=lambda rows, *shape: rows != 8)
+        def no_build_at_c1_width():
+            return SimpleNamespace(prepare=lambda rows, *shape: rows != self.rows)
 
         def no_kernels():
             raise MonoUnsupported("mono kernels unavailable")
 
         logged = [
             *self.logged(refusal="TP 4"),
-            *self.logged(create=no_8_row_build),
+            *self.logged(create=no_build_at_c1_width),
             *self.logged(create=no_kernels),
         ]
         for line in self.decode["expect_log"] + self.decode["reject_log"]:
