@@ -32,6 +32,9 @@ from atom.entrypoints.openai.protocol import (
     ChatMessage,
     CompletionRequest,
 )
+from atom.entrypoints.openai.serving_completion import stream_completion_response
+from atom.entrypoints.openai.sse import iter_sse_data
+from atom.entrypoints.openai.streaming_dispatch import StreamOutputCollector
 
 USER = {"role": "user", "content": "Write quick sort"}
 
@@ -337,6 +340,59 @@ def test_fim_rejections_are_400_before_generation(
         _complete(handler, **kwargs)
     assert exc.value.status_code == 400
     assert not engine.prompts
+
+
+def test_echo_returns_the_prompt_ahead_of_the_completion(engine):
+    choice = _complete(api_server.beta_completions, prompt="def f(a):", echo=True)
+    assert choice["text"] == "def f(a):tail"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"prompt": "p", "suffix": "s", "echo": True},
+        {"prompt": "p", "logprobs": 2},
+        {"prompt": "p", "stream_options": {"include_usage": True}},
+        {"prompt": "p", "stream": True, "stream_options": {"include_usage": "yes"}},
+    ],
+)
+def test_completion_options_outside_the_contract_are_400(engine, kwargs):
+    with pytest.raises(HTTPException) as exc:
+        _complete(api_server.beta_completions, **kwargs)
+    assert exc.value.status_code == 400
+    assert not engine.prompts
+
+
+def test_stream_echoes_the_prompt_and_puts_usage_on_every_chunk():
+    collector = StreamOutputCollector("r")
+
+    async def frames():
+        collector.put_nowait(
+            {"token_ids": [1], "text": "tail", "finished": True, "finish_reason": "eos"}
+        )
+        stream = stream_completion_response(
+            "r",
+            "m",
+            collector,
+            1,
+            4,
+            lambda *_args, **_kwargs: None,
+            lambda _request_id: None,
+            echo="def f():",
+            include_usage=True,
+        )
+        return "".join([frame async for frame in stream])
+
+    payloads = [
+        json.loads(data)
+        for data in iter_sse_data(asyncio.run(frames()))
+        if data != "[DONE]"
+    ]
+    assert payloads[0]["choices"][0]["text"] == "def f():"
+    assert all("usage" in payload for payload in payloads)
+    # Null on the echo, content and finish chunks; counted on the last one.
+    assert [p["usage"] for p in payloads if p["choices"]] == [None, None, None]
+    assert payloads[-1]["usage"]["completion_tokens"] == 1
 
 
 # --- against the official V4.1 encoder ------------------------------------------

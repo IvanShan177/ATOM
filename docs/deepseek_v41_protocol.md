@@ -111,7 +111,11 @@ those tokens in the vocabulary. V4.1 starts the middle with its line break
 rather than ending with one, so a cursor at the end of a line pairs with a
 suffix that begins with `\n`. `suffix` is rejected on `/v1/completions`, with
 token-ID prompts, and on a model without FIM tokens; without `suffix` the
-endpoint is an ordinary completion.
+endpoint is an ordinary completion. `echo` returns the prompt ahead of the
+completion and is rejected with `suffix`. `logprobs` is rejected on
+`/beta/completions` until completions return token probabilities.
+`stream_options` requires `stream`; `include_usage` puts `usage` on every
+chunk, null until the final usage chunk.
 
 ## Validation
 

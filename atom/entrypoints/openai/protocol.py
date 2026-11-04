@@ -325,6 +325,13 @@ class CompletionRequest(BaseModel):
     stop: list[str] | None = None
     ignore_eos: bool | None = False
     stream: bool | None = False
+    # Only with `stream`: `include_usage` puts `usage` on every chunk.
+    stream_options: dict[str, Any] | None = None
+    # Return the prompt ahead of the completion; not with `suffix`.
+    echo: bool | None = False
+    # Completions return no token probabilities yet: /beta/completions refuses
+    # this instead of dropping it.
+    logprobs: int | None = None
     # Optional KV-transfer metadata for P/D disaggregation.
     kv_transfer_params: dict[str, Any] | None = None
     # Optional DPA routing hint inserted by atomesh for DP-aware workers.

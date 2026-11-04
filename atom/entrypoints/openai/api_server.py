@@ -147,6 +147,7 @@ from .serving_chat import (
     stream_chat_response_fanout,
     validate_chat_request,
     validate_history_tool_calls,
+    validate_stream_options,
     validate_tool_list,
 )
 from .serving_completion import (
@@ -2319,6 +2320,12 @@ def _fill_in_the_middle_prompt(request: CompletionRequest, *, beta: bool) -> str
     return fim_format.render(request.prompt, request.suffix)
 
 
+def _echo_text(request: CompletionRequest) -> str:
+    """The prompt as `echo` returns it, ahead of the completion."""
+    prompt = request.get_prompt_or_tokens()
+    return prompt if isinstance(prompt, str) else tokenizer.decode(prompt)
+
+
 async def _completions(request: CompletionRequest, raw_request: Request, *, beta: bool):
     validate_model(request.model)
     _validate_chunked_receive(request.kv_transfer_params)
@@ -2326,6 +2333,13 @@ async def _completions(request: CompletionRequest, raw_request: Request, *, beta
     try:
         effective_n = _coerce_n(request.n, request.temperature)
         _validate_return_token_ids(request.return_token_ids, request.stream)
+        validate_stream_options(request.stream, request.stream_options)
+        if beta and request.logprobs is not None:
+            raise ValueError("logprobs is not supported on /beta/completions yet")
+        if request.echo and request.suffix is not None:
+            raise ValueError("echo cannot be combined with suffix")
+        echo = _echo_text(request) if request.echo else ""
+        include_usage = bool((request.stream_options or {}).get("include_usage"))
         sampling_params = _build_sampling_params(
             temperature=request.temperature,
             max_tokens=request.get_max_tokens(),
@@ -2377,6 +2391,8 @@ async def _completions(request: CompletionRequest, raw_request: Request, *, beta
                     num_prompt_tokens,
                     cleanup_stream,
                     cleanup_request,
+                    echo=echo,
+                    include_usage=include_usage,
                 )
             else:
                 seq_id, stream_collector, num_prompt_tokens = (
@@ -2396,6 +2412,8 @@ async def _completions(request: CompletionRequest, raw_request: Request, *, beta
                     num_prompt_tokens,
                     cleanup_stream,
                     cleanup_request,
+                    echo=echo,
+                    include_usage=include_usage,
                 )
             return StreamingResponse(
                 _client_stream(gen, request_id),
@@ -2418,7 +2436,9 @@ async def _completions(request: CompletionRequest, raw_request: Request, *, beta
             )
             if not outputs:
                 raise RuntimeError("No output generated")
-            resp = build_completion_response_multi(request_id, model_name, outputs)
+            resp = build_completion_response_multi(
+                request_id, model_name, outputs, echo=echo
+            )
         else:
             final_output = await _run_nonstream_with_disconnect(
                 generate_async(
@@ -2436,7 +2456,9 @@ async def _completions(request: CompletionRequest, raw_request: Request, *, beta
             if final_output is None:
                 raise RuntimeError("No output generated")
 
-            resp = build_completion_response(request_id, model_name, final_output)
+            resp = build_completion_response(
+                request_id, model_name, final_output, echo=echo
+            )
         _log_request_model("response", request_id, resp)
         return JSONResponse(content=resp.model_dump(mode="json"))
 
