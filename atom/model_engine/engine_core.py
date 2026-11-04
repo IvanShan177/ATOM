@@ -62,6 +62,19 @@ KV_IDLE_DRAIN_INTERVAL_S = 0.001
 KV_SHUTDOWN_DRAIN_TIMEOUT_S = 2.0
 
 
+def publish_idle_state_work(scheduler) -> None:
+    """Publish the state loads and stores `scheduler` holds while no batch runs.
+
+    getattr, as for `kv_connector` in `_dispatch_idle_offload_work`: this path
+    is reached with scheduler doubles that implement only the connector
+    surface.
+    """
+    for name in ("_publish_state_loads", "_publish_state_stores"):
+        publish = getattr(scheduler, name, None)
+        if publish is not None:
+            publish()
+
+
 class EngineCore:
     # This process's name, for the title and every GC log line. A class
     # attribute because it is per-process state and each engine is spawned into
@@ -210,7 +223,10 @@ class EngineCore:
             if (
                 config.parallel_config.data_parallel_size == 1
                 and config.pipeline_parallel_size == 1
-                and envs.ATOM_PREFILL_DECODE_INTERVAL > 0
+                and (
+                    envs.ATOM_PREFILL_DECODE_INTERVAL > 0
+                    or config.prefill_admit_policy == "adaptive"
+                )
             ):
                 self._init_prefill_delayer(config)
 
@@ -262,6 +278,7 @@ class EngineCore:
                 prefill_decode_interval=envs.ATOM_PREFILL_DECODE_INTERVAL,
                 exchange_prefill_costs=self.scheduler.cost_balance,
                 cost_gate=envs.ATOM_PREFILL_DELAYER_COST_GATE,
+                admit_policy=config.prefill_admit_policy,
             )
         )
 
@@ -540,7 +557,9 @@ class EngineCore:
                 # Arm post-prefill decode protection only after the prefill
                 # forward really completed. A delayer FIRE merely grants
                 # admission and can still result in a decode/empty batch.
-                self.scheduler.prefill_delayer.notify_prefill_executed()
+                self.scheduler.prefill_delayer.notify_prefill_executed(
+                    scheduled_batch.total_tokens_num_prefill
+                )
 
         # Aggregate KV transfer status from all workers (only when PD disaggregation is active)
         self._poll_kv_transfer_progress()
@@ -716,10 +735,6 @@ class EngineCore:
             )
         ):
             return
-        # getattr for the same reason as `kv_connector` above: this path is
-        # reached with scheduler doubles that implement only the connector
-        # surface.
-        #
         # `dispatch_new=False` on the shutdown drain: publishing new state
         # loads/stores there hands the connector work whose bytes nothing will
         # read back, and -- worse -- each fresh store keeps `has_pending_kv_work`
@@ -727,10 +742,7 @@ class EngineCore:
         # condition and never converges. Still build/process the meta so
         # already-dispatched transfers finish and report.
         if dispatch_new:
-            for name in ("_publish_state_loads", "_publish_state_stores"):
-                publish = getattr(self.scheduler, name, None)
-                if publish is not None:
-                    publish()
+            publish_idle_state_work(self.scheduler)
         meta = connector.build_connector_meta()
         if not connector_metadata_has_work(meta):
             return

@@ -17,6 +17,7 @@ from atom.distributed.pcp_utils import (
     pcp_pad_len,
 )
 from atom.model_loader.loader import load_model
+from atom.models.utils import PPMissingLayer
 from atom.spec_decode.draft_graph import DraftGraph
 from atom.utils import CpuGpuBuffer, resolve_obj_by_qualname
 from atom.utils.forward_context import (
@@ -111,6 +112,18 @@ def _resolve_embedding(target_model: nn.Module) -> nn.Module:
             "layer id -1 (expected model.embed_tokens or model.embed)."
         )
     return embed
+
+
+def tap_is_resident(target_model: nn.Module, layers: nn.Module, lid: int) -> bool:
+    """Whether aux tap ``lid`` runs on this PP stage: a tap owned by another
+    stage sits on a ``PPMissingLayer``. Out-of-range ids are not resident."""
+    if lid == -1:
+        module = _resolve_embedding(target_model)
+    elif 0 <= lid < len(layers):
+        module = layers[lid]
+    else:
+        return False
+    return not isinstance(module, PPMissingLayer)
 
 
 def _identity_extract(output: Any, _module: nn.Module) -> torch.Tensor:
@@ -222,6 +235,9 @@ class Drafter(abc.ABC):
     ``getattr(drafter, "dspark_*")`` and ``method == "eagle3"`` flavor probes
     ModelRunner used to scatter through its code.
     """
+
+    # The leading taps' rows relayed from earlier PP stages, as one block.
+    _relayed_aux: torch.Tensor | None = None
 
     def __init__(self, atom_config: Config, device: torch.device, runner):
         self.config = atom_config
@@ -391,7 +407,7 @@ class Drafter(abc.ABC):
         no capture). What a drafterless PP stage taps and relays on."""
         return None
 
-    def _aux_capture_spec(self, target_model: nn.Module) -> AuxCaptureSpec | None:
+    def _aux_capture_spec(self) -> AuxCaptureSpec | None:
         """Declare which target layers to tap for aux hidden states and how to
         extract them. Default: the config-only ``aux_capture_spec``. The base
         ``arm_aux_capture`` turns the spec into forward hooks."""
@@ -446,22 +462,28 @@ class Drafter(abc.ABC):
         this drafter's ``_aux_capture_spec``, writing each tapped layer's aux
         tensor into a preallocated buffer in-place (cudagraph-safe). Called once
         after ``load_model``. No-op when the drafter declares no spec."""
-        spec = self._aux_capture_spec(target_model)
+        spec = self._aux_capture_spec()
         if spec is None:
             return
+        layers = _resolve_decoder_layers(target_model)
+        # A tap on an earlier PP stage reaches `take_relayed_aux` instead, so it
+        # gets no rows and no hook. install_aux_taps still rejects bad ids.
+        own = tuple(
+            lid for lid in spec.layer_ids if tap_is_resident(target_model, layers, lid)
+        )
         self._aux_buffers = [
             torch.zeros(
-                self.max_num_tokens,
+                self.max_num_tokens if lid in own else 0,
                 spec.hidden_size,
                 device=self.device,
                 dtype=self.dtype,
             )
-            for _ in spec.layer_ids
+            for lid in spec.layer_ids
         ]
         install_aux_taps(
             target_model,
             spec,
-            spec.layer_ids,
+            own,
             lambda lid, extract: self._make_aux_hook(
                 spec.layer_ids.index(lid), extract
             ),
@@ -502,16 +524,23 @@ class Drafter(abc.ABC):
         """
         if not self._captures_aux:
             return None
+        blocks = self._aux_buffers
+        if self._relayed_aux is not None:
+            relayed = self._relayed_aux.shape[-1] // blocks[0].shape[-1]
+            blocks = [self._relayed_aux, *blocks[relayed:]]
         n = target_hidden_states.shape[0]
         pcp_ws = get_pcp_world_size()
         ctx = getattr(get_forward_context(), "context", None)
         if pcp_ws > 1 and n > 0 and getattr(ctx, "target_pcp_split", False):
             n_local = pcp_pad_len(n, pcp_ws) // pcp_ws
-            return [
-                pcp_allgather_rerange(buf[:n_local], pcp_ws)[:n]
-                for buf in self._aux_buffers
-            ]
-        return [buf[:n] for buf in self._aux_buffers]
+            return [pcp_allgather_rerange(buf[:n_local], pcp_ws)[:n] for buf in blocks]
+        return [buf[:n] for buf in blocks]
+
+    def take_relayed_aux(self, block: torch.Tensor) -> None:
+        """This forward's leading taps, relayed from earlier PP stages as one
+        ``[N, k * hidden_size]`` block in ``layer_ids`` order; ``aux_for``
+        serves it in place of their capture buffers, uncopied."""
+        self._relayed_aux = block
 
     def anchors_to_gpu(self, anchors: list[int]) -> torch.Tensor:
         """Scheduler-supplied anchors as an int32 GPU tensor, without blocking.

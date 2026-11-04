@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import torch
 from transformers import AutoConfig, GenerationConfig, PretrainedConfig
 
+from atom.model_engine.prefill_delayer import PREFILL_ADMIT_POLICIES
 from atom.model_loader.weight_utils import (
     checkpoint_layer_key,
     unquantized_layer_keys,
@@ -2038,6 +2039,10 @@ class Config:
     # --no-encoder-swa-bounded-replay keeps checkpoints. No effect on other models.
     enable_encoder_swa_bounded_replay: bool = True
     scheduler_delay_factor: float = 0.0
+    # Prefill admission (`--prefill-admit-policy`): "interval" keeps
+    # ATOM_PREFILL_DECODE_INTERVAL and the coalescer; "adaptive" replaces both
+    # with the rent-or-buy rule in prefill_delayer.py.
+    prefill_admit_policy: str = "interval"
     max_num_seqs: int = 512
     max_model_len: int | None = None
     gpu_memory_utilization: float = 0.9
@@ -2306,6 +2311,13 @@ class Config:
             )
             self.enable_tbo = False
             self.enable_tbo_decode = False
+
+        self.prefill_admit_policy = self.prefill_admit_policy.strip().lower()
+        if self.prefill_admit_policy not in PREFILL_ADMIT_POLICIES:
+            raise ValueError(
+                f"prefill_admit_policy must be one of {PREFILL_ADMIT_POLICIES}, "
+                f"got {self.prefill_admit_policy!r}"
+            )
 
         self.moe_backend = self.moe_backend.strip().lower()
         if self.moe_backend not in ("standard", "mega"):
@@ -2804,14 +2816,18 @@ class Config:
             self.state_replay_tokens = state_replay_tokens(self)
 
     def _check_pp_support(self) -> None:
-        """Refuse what PP does not wire yet: P/D consumers, and speculation
-        beyond Kimi-K3 with DSpark.
-
-        Only Kimi-K3 with DSpark relays the target's aux taps across stages;
-        anything else fails mid-serving or drafts from zero buffers.
+        """Refuse what PP does not wire yet: TBO, P/D consumers, and speculation
+        an architecture does not declare in ``pp_speculative_methods`` (a P/D
+        producer does not speculate); anything else fails mid-serving or drafts
+        from zero buffers.
         """
         if self.pipeline_parallel_size <= 1:
             return
+        # UBatchWrapper.forward takes no intermediate_tensors.
+        if self.enable_tbo:
+            raise ValueError(
+                "TBO (enable_tbo) is not supported with pipeline_parallel_size > 1."
+            )
         from atom.kv_transfer.disaggregation.pd_producer import (
             disaggregated_kv_role,
         )
@@ -2819,20 +2835,25 @@ class Config:
         # A consumer's first decode leaves T0 plus mtp_k placeholders, not the
         # mtp_k + 1 the PP verify window assumes, and the PP loop has no
         # remote-KV path at all.
-        if disaggregated_kv_role(self) == "kv_consumer":
+        role = disaggregated_kv_role(self)
+        if role == "kv_consumer":
             raise ValueError(
                 "A P/D kv_consumer is not supported with pipeline_parallel_size > 1."
             )
-        if self.speculative_config is None:
+        # A producer never speculates; it loads the drafter only to write the
+        # draft layer's KV.
+        if self.speculative_config is None or role == "kv_producer":
             return
+        from atom.models.registry import pp_speculative_methods
+
         archs = getattr(self.hf_config, "architectures", None) or ()
-        if "KimiK3ForConditionalGeneration" not in archs or not (
-            self.speculative_config.use_dspark()
-        ):
+        spec = self.speculative_config
+        method = "dspark" if spec.use_dspark() else spec.method
+        if not any(method in pp_speculative_methods.get(a, ()) for a in archs):
             raise ValueError(
                 "pipeline_parallel_size > 1 with speculative decoding supports "
-                f"only Kimi-K3 with DSpark, got architectures={list(archs)}, "
-                f"method={self.speculative_config.method!r}."
+                "only the methods registry.pp_speculative_methods declares, got "
+                f"architectures={list(archs)}, method={method!r}."
             )
         if self.dspark.confidence_schedule:
             raise ValueError(
@@ -2992,6 +3013,21 @@ class Config:
             str(factors).encode(), usedforsecurity=False
         ).hexdigest()[:10]
         return hash_str
+
+
+def local_device_index(config: Config, rank: int) -> int:
+    """Node-local GPU index of worker ``rank`` (0..tp*pcp-1) of its stage.
+
+    On a single node the physical GPU index equals the global distributed rank
+    in the DPxPPxPCPxTP layout: each EngineCore (one per (dp,pp) stage) owns a
+    contiguous slice of `tp_world_size * prefill_context_parallel_size` GPUs.
+    """
+    pc = config.parallel_config
+    engine_index = (
+        pc.data_parallel_rank_local or 0
+    ) * config.pipeline_parallel_size + pc.pipeline_parallel_rank
+    stage_span = config.tp_world_size * config.prefill_context_parallel_size
+    return engine_index * stage_span + rank
 
 
 _current_atom_config: Config | None = None
