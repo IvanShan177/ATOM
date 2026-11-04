@@ -592,6 +592,7 @@ def weight_is_stored_preshuffled(
     *,
     needs_preshuffled_weight: bool = False,
     native_group_rows: int | None = None,
+    weight_shape: tuple[int, ...] | None = None,
 ) -> bool:
     """Whether a quantized 2D GEMM weight of this kind is held preshuffled.
 
@@ -614,7 +615,9 @@ def weight_is_stored_preshuffled(
     FlyDSL one (it reads the 32x32 scales as stored), and always under
     ``needs_preshuffled_weight`` (V4.1's grouped ``wo_a``). A 1x32 (MXFP8) one,
     e.g. the MiniMax-M3.1 DSpark draft's linears: on gfx950 under the same
-    switch, where that GEMM runs FlyDSL's MXFP8 bmm / mxpsh kernels.
+    switch, where that GEMM runs FlyDSL's MXFP8 bmm / mxpsh kernels, and only
+    when ``weight_shape``'s N is a multiple of 16 -- the (16, 16) shuffle and
+    that GEMM need it, while a 1x32 scale allows any N (K % 32 holds by it).
 
     Says nothing about rank. Only 2D weights are shuffled -- Qwen3-Next's GDN
     conv1d expands its weight to 3D and must stay row-major -- so the caller
@@ -643,7 +646,8 @@ def weight_is_stored_preshuffled(
         gfx = get_gfx()
         if native_group_rows == 1:
             # MXFP8 (1x32): AITER's preshuffled group32 GEMM reads it on gfx950.
-            return envs.ATOM_GROUP32_WEIGHT_PRESHUFFLE and gfx == "gfx950"
+            tileable = weight_shape is not None and weight_shape[-2] % 16 == 0
+            return tileable and envs.ATOM_GROUP32_WEIGHT_PRESHUFFLE and gfx == "gfx950"
         return gfx == "gfx1250" or (
             envs.ATOM_GROUP32_WEIGHT_PRESHUFFLE and gfx == "gfx950"
         )
@@ -1274,6 +1278,7 @@ class LinearBase(nn.Module):
                     self, "needs_preshuffled_weight", False
                 ),
                 native_group_rows=self.native_a8_group_rows,
+                weight_shape=tuple(self.weight.shape),
             ):
                 shuffle_weights(self.weight)
             return

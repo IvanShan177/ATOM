@@ -112,24 +112,27 @@ def test_unquantized_and_per_tensor_are_not_shuffled():
 
 
 @pytest.mark.parametrize(
-    "env_value,gfx,expected",
+    "env_value,gfx,shape,expected",
     [
-        ("1", "gfx950", True),
-        ("0", "gfx950", False),
-        ("1", "gfx942", False),
-        ("1", "gfx1250", False),
+        ("1", "gfx950", (32, 64), True),
+        ("0", "gfx950", (32, 64), False),
+        ("1", "gfx942", (32, 64), False),
+        ("1", "gfx1250", (32, 64), False),
+        # The (16, 16) shuffle cannot tile N = 65; such a weight stays row-major.
+        ("1", "gfx950", (65, 64), False),
     ],
 )
-def test_native_1x32_fp8_is_shuffled_on_gfx950_only(
-    monkeypatch, env_value, gfx, expected
+def test_native_1x32_fp8_is_shuffled_on_gfx950_when_tileable(
+    monkeypatch, env_value, gfx, shape, expected
 ):
     """A native MXFP8 (1x32) weight is held preshuffled where AITER's
-    preshuffled group32 GEMM reads it (gfx950), under the group32 switch."""
+    preshuffled group32 GEMM reads it (gfx950, N % 16 == 0), under the group32
+    switch."""
     monkeypatch.setenv("ATOM_GROUP32_WEIGHT_PRESHUFFLE", env_value)
     monkeypatch.setattr("aiter.jit.utils.chip_info.get_gfx", lambda: gfx)
     assert (
         weight_is_stored_preshuffled(
-            QuantType.per_1x32, dtypes.fp8, native_group_rows=1
+            QuantType.per_1x32, dtypes.fp8, native_group_rows=1, weight_shape=shape
         )
         is expected
     )
@@ -139,7 +142,7 @@ def test_native_1x32_fp4_is_not_shuffled(monkeypatch):
     monkeypatch.setattr("aiter.jit.utils.chip_info.get_gfx", lambda: "gfx950")
     assert (
         weight_is_stored_preshuffled(
-            QuantType.per_1x32, dtypes.fp4x2, native_group_rows=1
+            QuantType.per_1x32, dtypes.fp4x2, native_group_rows=1, weight_shape=(32, 64)
         )
         is False
     )
@@ -179,14 +182,22 @@ def test_forced_gfx1250_triton_uses_legacy_m_dependent_activation_layout(monkeyp
 # ── the property: load and sync agree ─────────────────────────────────────
 
 
-def _linear_double(quant_type, params_dtype, needs_preshuffled_weight, *, dim=2):
+def _linear_double(
+    quant_type,
+    params_dtype,
+    needs_preshuffled_weight,
+    *,
+    dim=2,
+    native_group_rows=None,
+    rows=32,
+):
     """The attributes `LinearBase.process_weights_after_loading` reads.
 
     A double rather than a real Linear so the case matrix does not need a
     quant config and a device allocation per row; the method under test is the
     real one.
     """
-    shape = (32, 64) if dim == 2 else (2, 32, 64)
+    shape = (rows, 64) if dim == 2 else (2, rows, 64)
     return SimpleNamespace(
         weight=nn.Parameter(torch.zeros(shape, dtype=torch.uint8), requires_grad=False),
         weight_scale=nn.Parameter(torch.ones(32, 1), requires_grad=False),
@@ -198,9 +209,9 @@ def _linear_double(quant_type, params_dtype, needs_preshuffled_weight, *, dim=2)
         need_normalize_e4m3fn_to_e4m3fnuz=False,
         output_partition_sizes=[32],
         needs_preshuffled_weight=needs_preshuffled_weight,
-        # `None` = not the native group32 path, which returns before settling
-        # any layout at all and so would answer every case below the same way.
-        native_a8_group_rows=None,
+        # `None` = not the native group32 path (the CASES below); the native one
+        # settles only the weight's layout and returns.
+        native_a8_group_rows=native_group_rows,
         _maybe_pad_a8w8_preshuffle_output=lambda: False,
         prefix="test",
     )
@@ -216,7 +227,7 @@ def _updater_double():
     return _Updater()
 
 
-def _loader_shuffles(monkeypatch, case, *, dim=2):
+def _loader_shuffles(monkeypatch, case, *, dim=2, **native):
     calls = []
     monkeypatch.setattr(linear_mod, "shuffle_weights", lambda *a, **k: calls.append(a))
     # per_1x32 shuffles its scale through aiter at the end of the method; that
@@ -224,17 +235,17 @@ def _loader_shuffles(monkeypatch, case, *, dim=2):
     monkeypatch.setattr(
         linear_mod.fp4_utils, "e8m0_shuffle", lambda scale: scale, raising=False
     )
-    LinearBase.process_weights_after_loading(_linear_double(*case, dim=dim))
+    LinearBase.process_weights_after_loading(_linear_double(*case, dim=dim, **native))
     return bool(calls)
 
 
-def _sync_shuffles(monkeypatch, case, *, dim=2):
+def _sync_shuffles(monkeypatch, case, *, dim=2, native_group_rows=None, rows=32):
     import atom.model_ops.utils as utils_mod
 
     calls = []
     monkeypatch.setattr(utils_mod, "shuffle_weights", lambda *a, **k: calls.append(a))
     quant_type, params_dtype, needs_preshuffled_weight = case
-    shape = (32, 64) if dim == 2 else (2, 32, 64)
+    shape = (rows, 64) if dim == 2 else (2, rows, 64)
     param = nn.Parameter(torch.zeros(shape, dtype=torch.uint8), requires_grad=False)
     module = SimpleNamespace(
         quant_type=quant_type,
@@ -242,6 +253,7 @@ def _sync_shuffles(monkeypatch, case, *, dim=2):
         needs_preshuffled_weight=needs_preshuffled_weight,
         weight_scale=None,
         need_normalize_e4m3fn_to_e4m3fnuz=False,
+        native_a8_group_rows=native_group_rows,
     )
     _updater_double()._post_process_fp8_weight(module, param)
     return bool(calls)
@@ -257,6 +269,29 @@ def test_load_and_sync_shuffle_in_the_same_cases(
     monkeypatch.setenv("ATOM_USE_TRITON_GEMM", triton_gemm)
 
     assert _loader_shuffles(monkeypatch, case) == _sync_shuffles(monkeypatch, case)
+
+
+@pytest.mark.parametrize(
+    "native_group_rows,rows", [(1, 32), (1, 40), (32, 32)], ids=lambda v: str(v)
+)
+@pytest.mark.parametrize("preshuffle", ["0", "1"])
+@pytest.mark.parametrize("gfx", ["gfx950", "gfx1250"])
+def test_load_and_sync_shuffle_native_group32_the_same(
+    monkeypatch, native_group_rows, rows, preshuffle, gfx
+):
+    """The native group32 branch, 1x32 (MXFP8) included: the loader and the sync
+    shuffle together, and a 1x32 weight whose N the (16, 16) shuffle cannot
+    tile (N = 40) is shuffled by neither."""
+    monkeypatch.setenv("ATOM_GROUP32_WEIGHT_PRESHUFFLE", preshuffle)
+    monkeypatch.setattr("aiter.jit.utils.chip_info.get_gfx", lambda: gfx)
+    case = (QuantType.per_1x32, dtypes.fp8, False)
+    native = {"native_group_rows": native_group_rows, "rows": rows}
+    loads = _loader_shuffles(monkeypatch, case, **native)
+    assert loads == _sync_shuffles(monkeypatch, case, **native)
+    expect = preshuffle == "1" and gfx == "gfx950" and rows % 16 == 0
+    if native_group_rows == 32:
+        expect = gfx == "gfx1250" or (preshuffle == "1" and gfx == "gfx950")
+    assert loads is expect
 
 
 # ── one decision, one comparison ──────────────────────────────────────────

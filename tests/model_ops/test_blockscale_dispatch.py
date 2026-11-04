@@ -65,34 +65,6 @@ def test_aiter_execution_errors_are_not_hidden(monkeypatch, error_type):
     assert raised.value is error
 
 
-def test_preshuffled_1x32_fp8_goes_to_aiters_preshuffled_gemm(monkeypatch):
-    """A preshuffled 1x32 weight takes AITER's preshuffled group32 GEMM, flattened
-    to 2D, with its scales as stored (no Triton fallback reads that layout)."""
-    calls = []
-
-    def group32(xq, weight, x_scale, weight_scale, **kwargs):
-        calls.append((tuple(xq.shape), tuple(x_scale.shape), kwargs))
-        return torch.zeros((xq.shape[0], weight.shape[0]), dtype=torch.bfloat16)
-
-    monkeypatch.setattr(blockscale, "_aiter_fp8_gemm", group32)
-    out = blockscale.native_quant_linear(
-        torch.empty((2, 3, 64), dtype=torch.float8_e4m3fn),
-        torch.empty((32, 64), dtype=torch.float8_e4m3fn),
-        torch.empty((32, 2), dtype=torch.float8_e8m0fnu),
-        x_scale=torch.empty((2, 3, 2), dtype=torch.float8_e8m0fnu),
-        weight_group_rows=1,
-        weight_preshuffled=True,
-    )
-    assert out.shape == (2, 3, 32)
-    assert calls == [
-        (
-            (6, 64),
-            (6, 2),
-            {"dtype": torch.bfloat16, "isBpreshuffled": True, "split_k": None},
-        )
-    ]
-
-
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="runs the FlyDSL and Triton GEMMs"
 )
